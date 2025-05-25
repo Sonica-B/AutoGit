@@ -11,3 +11,12 @@ vsc-extension-quickstart.md
 **/*.ts
 npm-debug.log
 *.vsix
+.git/**
+node_modules/**
+coverage/**
+.DS_Store
+Thumbs.db
+*.log
+.env*
+screenshots/**
+docs/**
