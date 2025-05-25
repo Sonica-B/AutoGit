@@ -46,7 +46,7 @@ vsce package
 6. **Install in VS Code:**
 ```bash
 # Uninstall any existing version
-code --uninstall-extension shreya-boyane.auto-git-copilot
+code --uninstall-extension ShreyaBoyane.auto-git-copilot
 
 # Install the new version
 code --install-extension auto-git-copilot-1.0.2.vsix
