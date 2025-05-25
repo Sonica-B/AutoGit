@@ -140,11 +140,11 @@ function activate(context) {
 function setupFileChangeDetection(context) {
     console.log('Auto Git: Setting up alternative file change detection...');
     
-    // Method 1: File System Watcher (watches for any file changes in workspace)
+    // Method 1: File System Watcher (watches for any file changes in workspace, excluding .git)
     try {
-        // Watch all files except those in exclude patterns
+        // Watch all files except .git and other excluded directories
         const pattern = new vscode.RelativePattern(workspacePath, '**/*');
-        fileSystemWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+        fileSystemWatcher = vscode.workspace.createFileSystemWatcher(pattern, false, false, false);
         
         // Handle file changes
         fileSystemWatcher.onDidChange((uri) => {
@@ -171,7 +171,12 @@ function setupFileChangeDetection(context) {
     try {
         const textChangeListener = vscode.workspace.onDidChangeTextDocument((event) => {
             if (event.document.uri.scheme === 'file') {
-                handleFileChange(event.document.uri, 'text-changed');
+                const relativePath = path.relative(workspacePath, event.document.uri.fsPath);
+                
+                // Skip git internal files and excluded files
+                if (!relativePath.startsWith('.git/') && !shouldExcludeFile(relativePath)) {
+                    handleFileChange(event.document.uri, 'text-changed');
+                }
             }
         });
         
@@ -181,18 +186,26 @@ function setupFileChangeDetection(context) {
         console.error('Auto Git: Failed to create text change listener:', textChangeError);
     }
     
-    // Method 3: Periodic Git Status Check (fallback)
-    const periodicCheck = setInterval(() => {
+    // Method 3: Periodic Git Status Check (fallback) - but only check for real changes
+    const periodicCheck = setInterval(async () => {
         if (isEnabled && changeTracker.size > 0) {
             const now = Date.now();
             // Check if enough time has passed since last activity
             if (now - lastCheckTime > 5000) { // 5 seconds of inactivity
-                console.log('Auto Git: Periodic check triggered git operations');
-                scheduleGitOperations();
+                try {
+                    // Double-check if there are actually changes to commit
+                    const { stdout: statusOutput } = await execAsync('git status --porcelain', { cwd: workspacePath });
+                    if (statusOutput.trim().length > 0) {
+                        console.log('Auto Git: Periodic check triggered git operations');
+                        scheduleGitOperations();
+                    }
+                } catch (error) {
+                    console.warn('Auto Git: Periodic check failed:', error.message);
+                }
                 changeTracker.clear();
             }
         }
-    }, 10000); // Check every 10 seconds
+    }, 15000); // Check every 15 seconds (less frequent)
     
     // Clean up interval on deactivation
     context.subscriptions.push({
@@ -309,7 +322,7 @@ async function performGitOperations() {
             return;
         }
 
-        // Get git status
+        // Get git status - only show files that git thinks should be tracked
         const { stdout: statusOutput } = await execAsync('git status --porcelain', { cwd: workspacePath });
         const hasChanges = statusOutput.trim().length > 0;
         
@@ -320,19 +333,74 @@ async function performGitOperations() {
         }
 
         console.log('Auto Git: Changes detected, proceeding with commit');
+        console.log('Auto Git: Git status output:', statusOutput.trim());
 
-        // Stage files based on configuration
-        const config = vscode.workspace.getConfiguration('autoGitCopilot');
-        const includeUntracked = config.get('includeUntracked', true);
+        // Parse git status to get only the files that should be committed
+        const lines = statusOutput.trim().split('\n').filter(line => line.trim());
+        const filesToAdd = [];
+        const filesToRemove = [];
         
-        if (includeUntracked) {
-            await execAsync('git add .', { cwd: workspacePath });
-            console.log('Auto Git: Staged all files including untracked');
-        } else {
-            // Only stage modified files (not untracked)
-            await execAsync('git add -u', { cwd: workspacePath });
-            console.log('Auto Git: Staged only tracked files');
+        lines.forEach(line => {
+            const status = line.substring(0, 2);
+            const filepath = line.substring(3).trim();
+            
+            // Skip git internal files
+            if (filepath.startsWith('.git/')) {
+                console.log(`Auto Git: Skipping git internal file: ${filepath}`);
+                return;
+            }
+            
+            // Handle different git status codes
+            if (status.includes('D')) {
+                // File deleted
+                filesToRemove.push(filepath);
+            } else if (status.includes('?')) {
+                // Untracked file - check if we should include it
+                const config = vscode.workspace.getConfiguration('autoGitCopilot');
+                const includeUntracked = config.get('includeUntracked', true);
+                if (includeUntracked && !shouldExcludeFile(filepath)) {
+                    filesToAdd.push(filepath);
+                }
+            } else if (status.includes('M') || status.includes('A') || status.includes('R') || status.includes('C')) {
+                // Modified, added, renamed, or copied file
+                if (!shouldExcludeFile(filepath)) {
+                    filesToAdd.push(filepath);
+                }
+            }
+        });
+
+        // Stage files individually to respect gitignore and exclude patterns
+        if (filesToAdd.length > 0) {
+            console.log('Auto Git: Files to add:', filesToAdd);
+            for (const file of filesToAdd) {
+                try {
+                    await execAsync(`git add "${file}"`, { cwd: workspacePath });
+                } catch (addError) {
+                    console.warn(`Auto Git: Failed to add ${file}:`, addError.message);
+                }
+            }
         }
+
+        if (filesToRemove.length > 0) {
+            console.log('Auto Git: Files to remove:', filesToRemove);
+            for (const file of filesToRemove) {
+                try {
+                    await execAsync(`git add "${file}"`, { cwd: workspacePath }); // git add also stages deletions
+                } catch (removeError) {
+                    console.warn(`Auto Git: Failed to stage deletion of ${file}:`, removeError.message);
+                }
+            }
+        }
+
+        // Check if anything was actually staged
+        const { stdout: diffCached } = await execAsync('git diff --cached --name-only', { cwd: workspacePath });
+        if (!diffCached.trim()) {
+            console.log('Auto Git: No changes were staged after filtering');
+            updateStatusBar();
+            return;
+        }
+
+        console.log('Auto Git: Staged files:', diffCached.trim().split('\n'));
 
         // Generate commit message using Copilot
         const commitMessage = await generateCommitMessage(statusOutput);
