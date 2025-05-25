@@ -1,101 +1,131 @@
 const vscode = require('vscode');
-const simpleGit = require('simple-git');
+const { exec } = require('child_process');
 const path = require('path');
+const { promisify } = require('util');
+
+const execAsync = promisify(exec);
 
 let isEnabled = false;
 let statusBarItem;
 let pendingTimeout;
-let git;
+let workspacePath;
 
 /**
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
-    console.log('Auto Git with Copilot extension is now active!');
-
-    // Initialize git
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-        vscode.window.showWarningMessage('Auto Git: No workspace folder found');
-        return;
-    }
-
-    git = simpleGit(workspaceFolders[0].uri.fsPath);
-
-    // Create status bar item
-    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-    statusBarItem.command = 'autoGitCopilot.toggle';
-    updateStatusBar();
-    statusBarItem.show();
-    context.subscriptions.push(statusBarItem);
-
-    // Get initial configuration
-    const config = vscode.workspace.getConfiguration('autoGitCopilot');
-    isEnabled = config.get('enabled', false);
-
-    // Register commands
-    const toggleCommand = vscode.commands.registerCommand('autoGitCopilot.toggle', () => {
-        isEnabled = !isEnabled;
-        const config = vscode.workspace.getConfiguration('autoGitCopilot');
-        config.update('enabled', isEnabled, vscode.ConfigurationTarget.Workspace);
-        updateStatusBar();
-        vscode.window.showInformationMessage(`Auto Git ${isEnabled ? 'enabled' : 'disabled'}`);
-    });
-
-    const commitNowCommand = vscode.commands.registerCommand('autoGitCopilot.commitNow', () => {
-        if (pendingTimeout) {
-            clearTimeout(pendingTimeout);
-            pendingTimeout = null;
-        }
-        performGitOperations();
-    });
-
-    // Register file save listener
-    const saveListener = vscode.workspace.onDidSaveDocument((document) => {
-        if (!isEnabled) return;
+    try {
+        console.log('Auto Git with Copilot extension is now active!');
         
-        const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-        if (!workspaceFolder) return;
-
-        // Check if file should be excluded
-        const config = vscode.workspace.getConfiguration('autoGitCopilot');
-        const excludePatterns = config.get('excludePatterns', []);
-        const relativePath = path.relative(workspaceFolder.uri.fsPath, document.uri.fsPath);
-        
-        const shouldExclude = excludePatterns.some(pattern => {
-            const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
-            return regex.test(relativePath);
-        });
-
-        if (shouldExclude) {
-            console.log(`Auto Git: Excluding file ${relativePath}`);
+        // Initialize git
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            console.log('Auto Git: No workspace folder found');
+            vscode.window.showWarningMessage('Auto Git: No workspace folder found');
             return;
         }
 
-        // Debounce git operations
-        if (pendingTimeout) {
-            clearTimeout(pendingTimeout);
-        }
+        workspacePath = workspaceFolders[0].uri.fsPath;
+        console.log('Auto Git: Workspace initialized:', workspacePath);
 
-        const delay = config.get('delayMs', 3000);
-        statusBarItem.text = `$(sync~spin) Auto Git: Pending...`;
-        
-        pendingTimeout = setTimeout(() => {
-            performGitOperations();
-            pendingTimeout = null;
-        }, delay);
-    });
+        // Create status bar item
+        statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+        statusBarItem.command = 'autoGitCopilot.toggle';
+        updateStatusBar();
+        statusBarItem.show();
+        context.subscriptions.push(statusBarItem);
+        console.log('Auto Git: Status bar item created');
 
-    // Register configuration change listener
-    const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
-        if (e.affectsConfiguration('autoGitCopilot.enabled')) {
+        // Get initial configuration
+        const config = vscode.workspace.getConfiguration('autoGitCopilot');
+        isEnabled = config.get('enabled', false);
+        console.log('Auto Git: Initial enabled state:', isEnabled);
+
+        // Register commands
+        const toggleCommand = vscode.commands.registerCommand('autoGitCopilot.toggle', () => {
+            try {
+                isEnabled = !isEnabled;
+                const config = vscode.workspace.getConfiguration('autoGitCopilot');
+                config.update('enabled', isEnabled, vscode.ConfigurationTarget.Workspace);
+                updateStatusBar();
+                vscode.window.showInformationMessage(`Auto Git ${isEnabled ? 'enabled' : 'disabled'}`);
+                console.log(`Auto Git toggled: ${isEnabled ? 'enabled' : 'disabled'}`);
+            } catch (error) {
+                console.error('Error in toggle command:', error);
+                vscode.window.showErrorMessage(`Auto Git toggle failed: ${error.message}`);
+            }
+        });
+
+        const commitNowCommand = vscode.commands.registerCommand('autoGitCopilot.commitNow', () => {
+            try {
+                if (pendingTimeout) {
+                    clearTimeout(pendingTimeout);
+                    pendingTimeout = null;
+                }
+                performGitOperations();
+                console.log('Auto Git: Manual commit triggered');
+            } catch (error) {
+                console.error('Error in commit now command:', error);
+                vscode.window.showErrorMessage(`Auto Git commit failed: ${error.message}`);
+            }
+        });
+
+        console.log('Auto Git: Commands registered successfully');
+
+        // Register file save listener
+        const saveListener = vscode.workspace.onDidSaveDocument((document) => {
+            if (!isEnabled) return;
+            
+            const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+            if (!workspaceFolder) return;
+
+            // Check if file should be excluded
             const config = vscode.workspace.getConfiguration('autoGitCopilot');
-            isEnabled = config.get('enabled', false);
-            updateStatusBar();
-        }
-    });
+            const excludePatterns = config.get('excludePatterns', []);
+            const relativePath = path.relative(workspaceFolder.uri.fsPath, document.uri.fsPath);
+            
+            const shouldExclude = excludePatterns.some(pattern => {
+                const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
+                return regex.test(relativePath);
+            });
 
-    context.subscriptions.push(toggleCommand, commitNowCommand, saveListener, configListener);
+            if (shouldExclude) {
+                console.log(`Auto Git: Excluding file ${relativePath}`);
+                return;
+            }
+
+            // Debounce git operations
+            if (pendingTimeout) {
+                clearTimeout(pendingTimeout);
+            }
+
+            const delay = config.get('delayMs', 3000);
+            statusBarItem.text = `$(sync~spin) Auto Git: Pending...`;
+            
+            pendingTimeout = setTimeout(() => {
+                performGitOperations();
+                pendingTimeout = null;
+            }, delay);
+        });
+
+        // Register configuration change listener
+        const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
+            if (e.affectsConfiguration('autoGitCopilot.enabled')) {
+                const config = vscode.workspace.getConfiguration('autoGitCopilot');
+                isEnabled = config.get('enabled', false);
+                updateStatusBar();
+            }
+        });
+
+        context.subscriptions.push(toggleCommand, commitNowCommand, saveListener, configListener);
+        
+        console.log('Auto Git extension activation completed successfully');
+        vscode.window.showInformationMessage('Auto Git extension loaded successfully!');
+        
+    } catch (error) {
+        console.error('Auto Git extension activation failed:', error);
+        vscode.window.showErrorMessage(`Auto Git extension failed to load: ${error.message}`);
+    }
 }
 
 function updateStatusBar() {
@@ -115,16 +145,17 @@ async function performGitOperations() {
         statusBarItem.text = `$(sync~spin) Auto Git: Working...`;
         
         // Check if we're in a git repository
-        const isRepo = await git.checkIsRepo();
-        if (!isRepo) {
+        try {
+            await execAsync('git rev-parse --git-dir', { cwd: workspacePath });
+        } catch (error) {
             vscode.window.showErrorMessage('Auto Git: Not a git repository');
             updateStatusBar();
             return;
         }
 
         // Get git status
-        const status = await git.status();
-        const hasChanges = status.files.length > 0;
+        const { stdout: statusOutput } = await execAsync('git status --porcelain', { cwd: workspacePath });
+        const hasChanges = statusOutput.trim().length > 0;
         
         if (!hasChanges) {
             console.log('Auto Git: No changes to commit');
@@ -137,26 +168,21 @@ async function performGitOperations() {
         const includeUntracked = config.get('includeUntracked', true);
         
         if (includeUntracked) {
-            await git.add('.');
+            await execAsync('git add .', { cwd: workspacePath });
         } else {
-            // Only stage modified files
-            const modifiedFiles = status.files
-                .filter(file => file.index !== '?' && file.working_dir !== '?')
-                .map(file => file.path);
-            
-            if (modifiedFiles.length > 0) {
-                await git.add(modifiedFiles);
-            }
+            // Only stage modified files (not untracked)
+            await execAsync('git add -u', { cwd: workspacePath });
         }
 
         // Generate commit message using Copilot
-        const commitMessage = await generateCommitMessage(status);
+        const commitMessage = await generateCommitMessage(statusOutput);
         
         // Commit changes
-        await git.commit(commitMessage);
+        const escapedMessage = commitMessage.replace(/"/g, '\\"');
+        await execAsync(`git commit -m "${escapedMessage}"`, { cwd: workspacePath });
         
         // Push changes
-        await git.push();
+        await execAsync('git push', { cwd: workspacePath });
         
         vscode.window.showInformationMessage(`Auto Git: Committed and pushed: "${commitMessage}"`);
         updateStatusBar();
@@ -168,13 +194,22 @@ async function performGitOperations() {
     }
 }
 
-async function generateCommitMessage(status) {
+async function generateCommitMessage(statusOutput) {
     try {
-        // Prepare context for Copilot
-        const changedFiles = status.files.map(file => ({
-            path: file.path,
-            status: getFileStatus(file)
-        }));
+        // Parse git status output
+        const lines = statusOutput.trim().split('\n').filter(line => line.trim());
+        const changedFiles = lines.map(line => {
+            const status = line.substring(0, 2);
+            const filename = line.substring(3);
+            return {
+                path: filename,
+                status: getFileStatusFromCode(status)
+            };
+        });
+
+        if (changedFiles.length === 0) {
+            return 'Auto-commit: Update files';
+        }
 
         const context = `Generate a concise commit message for the following changes:
 ${changedFiles.map(f => `${f.status}: ${f.path}`).join('\n')}
@@ -186,18 +221,10 @@ The commit message should:
 - Describe what was changed, not how
 
 Example formats:
-- "feat: add user authentication system in file(s)"
-- "fix: resolve login validation bug in file(s)"
-- "chore: update dependencies and clean up code"
-- "docs: update API documentation in file(s)"
-- "refactor: simplify user service logic in file(s)"
-- "test: add unit tests for user service in file(s)"
-- "style: improve code formatting and readability in file(s)"
-- "ci: update CI configuration for better testing in file(s)"
-- "build: update build scripts for better performance in file(s)"
-- "perf: optimize image loading in file(s)"
-- "revert: revert changes from commit <hash> in file(s)"
-- "release: v1.0.0 - Initial release with basic features in file(s)"`;
+- "feat: add user authentication system"
+- "fix: resolve login validation bug"
+- "docs: update API documentation"
+- "refactor: simplify user service logic"`;
 
         // Try to use Copilot Chat API
         const models = await vscode.lm.selectChatModels({
@@ -241,13 +268,20 @@ Example formats:
     }
 
     // Fallback to simple commit message
-    return generateFallbackCommitMessage(status);
+    return generateFallbackCommitMessage(statusOutput);
 }
 
-function generateFallbackCommitMessage(status) {
-    const added = status.files.filter(f => f.index === 'A' || f.working_dir === '?').length;
-    const modified = status.files.filter(f => f.index === 'M' || f.working_dir === 'M').length;
-    const deleted = status.files.filter(f => f.index === 'D' || f.working_dir === 'D').length;
+function generateFallbackCommitMessage(statusOutput) {
+    const lines = statusOutput.trim().split('\n').filter(line => line.trim());
+    
+    let added = 0, modified = 0, deleted = 0;
+    
+    lines.forEach(line => {
+        const status = line.substring(0, 2);
+        if (status.includes('A') || status.includes('?')) added++;
+        else if (status.includes('M')) modified++;
+        else if (status.includes('D')) deleted++;
+    });
 
     const parts = [];
     if (added > 0) parts.push(`${added} added`);
@@ -258,15 +292,17 @@ function generateFallbackCommitMessage(status) {
         return 'Auto-commit: Update files';
     }
 
-    return `Auto-commit: ${parts.join(', ')} file${status.files.length === 1 ? '' : 's'}`;
+    return `Auto-commit: ${parts.join(', ')} file${lines.length === 1 ? '' : 's'}`;
 }
 
-function getFileStatus(file) {
-    if (file.index === 'A' || file.working_dir === '?') return 'Added';
-    if (file.index === 'M' || file.working_dir === 'M') return 'Modified';
-    if (file.index === 'D' || file.working_dir === 'D') return 'Deleted';
-    if (file.index === 'R') return 'Renamed';
-    if (file.index === 'C') return 'Copied';
+function getFileStatusFromCode(statusCode) {
+    // Git porcelain status codes
+    if (statusCode.includes('A')) return 'Added';
+    if (statusCode.includes('M')) return 'Modified';
+    if (statusCode.includes('D')) return 'Deleted';
+    if (statusCode.includes('R')) return 'Renamed';
+    if (statusCode.includes('C')) return 'Copied';
+    if (statusCode.includes('?')) return 'Untracked';
     return 'Changed';
 }
 
