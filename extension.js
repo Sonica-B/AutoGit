@@ -9,6 +9,9 @@ let isEnabled = false;
 let statusBarItem;
 let pendingTimeout;
 let workspacePath;
+let fileSystemWatcher;
+let changeTracker = new Set();
+let lastCheckTime = 0;
 
 /**
  * @param {vscode.ExtensionContext} context
@@ -48,6 +51,14 @@ function activate(context) {
                 const config = vscode.workspace.getConfiguration('autoGitCopilot');
                 config.update('enabled', isEnabled, vscode.ConfigurationTarget.Workspace);
                 updateStatusBar();
+                
+                // Start or stop file monitoring based on enabled state
+                if (isEnabled) {
+                    startFileMonitoring();
+                } else {
+                    stopFileMonitoring();
+                }
+                
                 vscode.window.showInformationMessage(`Auto Git ${isEnabled ? 'enabled' : 'disabled'}`);
                 console.log(`Auto Git toggled: ${isEnabled ? 'enabled' : 'disabled'}`);
             } catch (error) {
@@ -78,6 +89,8 @@ function activate(context) {
                 console.log('Auto Git: Test command executed successfully');
                 console.log('Auto Git: Current enabled state:', isEnabled);
                 console.log('Auto Git: Workspace path:', workspacePath);
+                console.log('Auto Git: File system watcher active:', !!fileSystemWatcher);
+                console.log('Auto Git: Changes tracked:', changeTracker.size);
             } catch (error) {
                 console.error('Error in test command:', error);
             }
@@ -86,80 +99,34 @@ function activate(context) {
         context.subscriptions.push(toggleCommand, commitNowCommand, testCommand);
         console.log('Auto Git: Commands registered successfully');
 
-        // Register file save listener with delay
-        setTimeout(() => {
-            try {
-                console.log('Auto Git: Registering file save listener...');
-                
-                const saveListener = vscode.workspace.onDidSaveDocument((document) => {
-                    if (!isEnabled) return;
-                    
-                    const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-                    if (!workspaceFolder) return;
-
-                    // Check if file should be excluded
-                    const config = vscode.workspace.getConfiguration('autoGitCopilot');
-                    const excludePatterns = config.get('excludePatterns', []);
-                    const relativePath = path.relative(workspaceFolder.uri.fsPath, document.uri.fsPath);
-                    
-                    const shouldExclude = excludePatterns.some(pattern => {
-                        try {
-                            const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
-                            return regex.test(relativePath);
-                        } catch (regexError) {
-                            console.warn(`Auto Git: Invalid pattern ${pattern}:`, regexError);
-                            return false;
-                        }
-                    });
-
-                    if (shouldExclude) {
-                        console.log(`Auto Git: Excluding file ${relativePath}`);
-                        return;
-                    }
-
-                    console.log(`Auto Git: File saved, scheduling commit: ${relativePath}`);
-
-                    // Debounce git operations
-                    if (pendingTimeout) {
-                        clearTimeout(pendingTimeout);
-                    }
-
-                    const delay = config.get('delayMs', 3000);
-                    if (statusBarItem) {
-                        statusBarItem.text = `$(sync~spin) Auto Git: Pending...`;
-                    }
-                    
-                    pendingTimeout = setTimeout(() => {
-                        performGitOperations();
-                        pendingTimeout = null;
-                    }, delay);
-                });
-
-                context.subscriptions.push(saveListener);
-                console.log('Auto Git: File save listener registered successfully');
-            } catch (error) {
-                console.error('Auto Git: Failed to register file save listener:', error);
-                vscode.window.showWarningMessage(`Auto Git: File save detection failed: ${error.message}`);
-            }
-        }, 1000);
+        // ALTERNATIVE APPROACH: Use multiple file change detection methods
+        setupFileChangeDetection(context);
 
         // Register configuration change listener
-        setTimeout(() => {
-            try {
-                const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
-                    if (e.affectsConfiguration('autoGitCopilot.enabled')) {
-                        const config = vscode.workspace.getConfiguration('autoGitCopilot');
-                        isEnabled = config.get('enabled', false);
+        try {
+            const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
+                if (e.affectsConfiguration('autoGitCopilot.enabled')) {
+                    const config = vscode.workspace.getConfiguration('autoGitCopilot');
+                    const newEnabled = config.get('enabled', false);
+                    if (newEnabled !== isEnabled) {
+                        isEnabled = newEnabled;
                         updateStatusBar();
+                        
+                        if (isEnabled) {
+                            startFileMonitoring();
+                        } else {
+                            stopFileMonitoring();
+                        }
+                        
                         console.log(`Auto Git: Configuration changed, enabled: ${isEnabled}`);
                     }
-                });
-                context.subscriptions.push(configListener);
-                console.log('Auto Git: Configuration listener registered');
-            } catch (error) {
-                console.error('Auto Git: Failed to register config listener:', error);
-            }
-        }, 1500);
+                }
+            });
+            context.subscriptions.push(configListener);
+            console.log('Auto Git: Configuration listener registered');
+        } catch (configError) {
+            console.error('Auto Git: Failed to register config listener:', configError);
+        }
 
         console.log('Auto Git extension activation completed successfully');
         vscode.window.showInformationMessage('Auto Git with Copilot loaded successfully!');
@@ -168,6 +135,140 @@ function activate(context) {
         console.error('Auto Git extension activation failed:', error);
         vscode.window.showErrorMessage(`Auto Git extension failed to load: ${error.message}`);
     }
+}
+
+function setupFileChangeDetection(context) {
+    console.log('Auto Git: Setting up alternative file change detection...');
+    
+    // Method 1: File System Watcher (watches for any file changes in workspace)
+    try {
+        // Watch all files except those in exclude patterns
+        const pattern = new vscode.RelativePattern(workspacePath, '**/*');
+        fileSystemWatcher = vscode.workspace.createFileSystemWatcher(pattern);
+        
+        // Handle file changes
+        fileSystemWatcher.onDidChange((uri) => {
+            handleFileChange(uri, 'changed');
+        });
+        
+        // Handle file creation
+        fileSystemWatcher.onDidCreate((uri) => {
+            handleFileChange(uri, 'created');
+        });
+        
+        // Handle file deletion
+        fileSystemWatcher.onDidDelete((uri) => {
+            handleFileChange(uri, 'deleted');
+        });
+        
+        context.subscriptions.push(fileSystemWatcher);
+        console.log('Auto Git: File system watcher created successfully');
+    } catch (fsWatcherError) {
+        console.error('Auto Git: Failed to create file system watcher:', fsWatcherError);
+    }
+    
+    // Method 2: Text Document Change Detection (detects when files are modified)
+    try {
+        const textChangeListener = vscode.workspace.onDidChangeTextDocument((event) => {
+            if (event.document.uri.scheme === 'file') {
+                handleFileChange(event.document.uri, 'text-changed');
+            }
+        });
+        
+        context.subscriptions.push(textChangeListener);
+        console.log('Auto Git: Text change listener created successfully');
+    } catch (textChangeError) {
+        console.error('Auto Git: Failed to create text change listener:', textChangeError);
+    }
+    
+    // Method 3: Periodic Git Status Check (fallback)
+    const periodicCheck = setInterval(() => {
+        if (isEnabled && changeTracker.size > 0) {
+            const now = Date.now();
+            // Check if enough time has passed since last activity
+            if (now - lastCheckTime > 5000) { // 5 seconds of inactivity
+                console.log('Auto Git: Periodic check triggered git operations');
+                scheduleGitOperations();
+                changeTracker.clear();
+            }
+        }
+    }, 10000); // Check every 10 seconds
+    
+    // Clean up interval on deactivation
+    context.subscriptions.push({
+        dispose: () => clearInterval(periodicCheck)
+    });
+    
+    console.log('Auto Git: Alternative file change detection setup complete');
+}
+
+function handleFileChange(uri, changeType) {
+    if (!isEnabled) return;
+    
+    // Check if file should be excluded
+    const config = vscode.workspace.getConfiguration('autoGitCopilot');
+    const excludePatterns = config.get('excludePatterns', []);
+    const relativePath = path.relative(workspacePath, uri.fsPath);
+    
+    const shouldExclude = excludePatterns.some(pattern => {
+        try {
+            const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
+            return regex.test(relativePath);
+        } catch (regexError) {
+            console.warn(`Auto Git: Invalid pattern ${pattern}:`, regexError);
+            return false;
+        }
+    });
+
+    if (shouldExclude) {
+        console.log(`Auto Git: Excluding file ${relativePath} (${changeType})`);
+        return;
+    }
+
+    console.log(`Auto Git: File ${changeType}: ${relativePath}`);
+    
+    // Track the change
+    changeTracker.add(relativePath);
+    lastCheckTime = Date.now();
+    
+    // Schedule git operations
+    scheduleGitOperations();
+}
+
+function scheduleGitOperations() {
+    // Debounce git operations
+    if (pendingTimeout) {
+        clearTimeout(pendingTimeout);
+    }
+
+    const config = vscode.workspace.getConfiguration('autoGitCopilot');
+    const delay = config.get('delayMs', 3000);
+    
+    if (statusBarItem) {
+        statusBarItem.text = `$(sync~spin) Auto Git: Pending...`;
+    }
+    
+    pendingTimeout = setTimeout(() => {
+        performGitOperations();
+        pendingTimeout = null;
+        changeTracker.clear();
+    }, delay);
+}
+
+function startFileMonitoring() {
+    console.log('Auto Git: Starting file monitoring');
+    changeTracker.clear();
+    lastCheckTime = Date.now();
+}
+
+function stopFileMonitoring() {
+    console.log('Auto Git: Stopping file monitoring');
+    if (pendingTimeout) {
+        clearTimeout(pendingTimeout);
+        pendingTimeout = null;
+    }
+    changeTracker.clear();
+    updateStatusBar();
 }
 
 function updateStatusBar() {
@@ -195,10 +296,14 @@ async function performGitOperations() {
             statusBarItem.text = `$(sync~spin) Auto Git: Working...`;
         }
         
+        console.log('Auto Git: Starting git operations...');
+        
         // Check if we're in a git repository
         try {
             await execAsync('git rev-parse --git-dir', { cwd: workspacePath });
+            console.log('Auto Git: Confirmed git repository');
         } catch (error) {
+            console.error('Auto Git: Not a git repository:', error);
             vscode.window.showErrorMessage('Auto Git: Not a git repository');
             updateStatusBar();
             return;
@@ -233,8 +338,8 @@ async function performGitOperations() {
         const commitMessage = await generateCommitMessage(statusOutput);
         console.log(`Auto Git: Generated commit message: "${commitMessage}"`);
         
-        // Commit changes
-        const escapedMessage = commitMessage.replace(/"/g, '\\"').replace(/'/g, "\\'");
+        // Commit changes with proper escaping
+        const escapedMessage = commitMessage.replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/`/g, '\\`');
         await execAsync(`git commit -m "${escapedMessage}"`, { cwd: workspacePath });
         console.log('Auto Git: Changes committed successfully');
         
@@ -295,16 +400,11 @@ Guidelines:
 - Use present tense ("add" not "added")
 
 Examples:
-- "feat: add user authentication system in file(s) -"
-- "fix: resolve login validation bug in file(s) -"
-- "docs: update API documentation in file(s) -"
-- "chore: update dependencies in file(s) -"
-- "refactor: simplify error handling logic in file(s) -"
-- "test: add unit tests for new feature in file(s) -"
-- "style: improve code formatting and readability in file(s) -"
-- "build: update build scripts for better performance in file(s) -"
-- "ci: configure CI pipeline for automated testing in file(s) -"
-- "perf: optimize image loading performance in file(s) -"
+- "feat: add user authentication system"
+- "fix: resolve login validation bug"
+- "docs: update API documentation"
+- "refactor: simplify error handling logic"
+- "style: improve code formatting"
 - "test: add unit tests for user service"
 
 Generate only the commit message, no quotes or explanation.`;
@@ -313,54 +413,58 @@ Generate only the commit message, no quotes or explanation.`;
 
         // Try to use Copilot Chat API
         try {
-            const models = await vscode.lm.selectChatModels({
-                vendor: 'copilot',
-                family: 'gpt-4'
-            });
+            if (vscode.lm && typeof vscode.lm.selectChatModels === 'function') {
+                const models = await vscode.lm.selectChatModels({
+                    vendor: 'copilot',
+                    family: 'gpt-4'
+                });
 
-            if (models && models.length > 0) {
-                console.log('Auto Git: Copilot model found, generating message...');
-                const model = models[0];
-                const messages = [
-                    vscode.LanguageModelChatMessage.User(context)
-                ];
+                if (models && models.length > 0) {
+                    console.log('Auto Git: Copilot model found, generating message...');
+                    const model = models[0];
+                    const messages = [
+                        vscode.LanguageModelChatMessage.User(context)
+                    ];
 
-                const response = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
-                
-                let commitMessage = '';
-                for await (const fragment of response.text) {
-                    commitMessage += fragment;
-                }
+                    const response = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
+                    
+                    let commitMessage = '';
+                    for await (const fragment of response.text) {
+                        commitMessage += fragment;
+                    }
 
-                // Clean up the response
-                commitMessage = commitMessage.trim();
-                
-                // Remove quotes if present
-                if ((commitMessage.startsWith('"') && commitMessage.endsWith('"')) ||
-                    (commitMessage.startsWith("'") && commitMessage.endsWith("'"))) {
-                    commitMessage = commitMessage.slice(1, -1);
-                }
+                    // Clean up the response
+                    commitMessage = commitMessage.trim();
+                    
+                    // Remove quotes if present
+                    if ((commitMessage.startsWith('"') && commitMessage.endsWith('"')) ||
+                        (commitMessage.startsWith("'") && commitMessage.endsWith("'"))) {
+                        commitMessage = commitMessage.slice(1, -1);
+                    }
 
-                // Remove any extra explanations after the commit message
-                const lines = commitMessage.split('\n');
-                commitMessage = lines[0].trim();
+                    // Remove any extra explanations after the commit message
+                    const lines = commitMessage.split('\n');
+                    commitMessage = lines[0].trim();
 
-                // Remove any remaining quotes or backticks
-                commitMessage = commitMessage.replace(/["`']/g, '');
+                    // Remove any remaining quotes or backticks
+                    commitMessage = commitMessage.replace(/["`']/g, '');
 
-                // Ensure it's not too long
-                const config = vscode.workspace.getConfiguration('autoGitCopilot');
-                const maxLength = config.get('maxCommitMessageLength', 72);
-                if (commitMessage.length > maxLength) {
-                    commitMessage = commitMessage.substring(0, maxLength - 3) + '...';
-                }
+                    // Ensure it's not too long
+                    const config = vscode.workspace.getConfiguration('autoGitCopilot');
+                    const maxLength = config.get('maxCommitMessageLength', 72);
+                    if (commitMessage.length > maxLength) {
+                        commitMessage = commitMessage.substring(0, maxLength - 3) + '...';
+                    }
 
-                if (commitMessage && commitMessage.length > 0) {
-                    console.log('Auto Git: AI commit message generated successfully');
-                    return commitMessage;
+                    if (commitMessage && commitMessage.length > 0) {
+                        console.log('Auto Git: AI commit message generated successfully');
+                        return commitMessage;
+                    }
+                } else {
+                    console.log('Auto Git: No Copilot models available');
                 }
             } else {
-                console.log('Auto Git: No Copilot models available');
+                console.log('Auto Git: Copilot Language Model API not available');
             }
         } catch (copilotError) {
             console.warn('Auto Git: Copilot API error:', copilotError.message);
@@ -412,10 +516,18 @@ function getFileStatusFromCode(statusCode) {
 
 function deactivate() {
     console.log('Auto Git extension deactivating...');
+    
     if (pendingTimeout) {
         clearTimeout(pendingTimeout);
         pendingTimeout = null;
     }
+    
+    if (fileSystemWatcher) {
+        fileSystemWatcher.dispose();
+        fileSystemWatcher = null;
+    }
+    
+    changeTracker.clear();
     console.log('Auto Git extension deactivated');
 }
 
