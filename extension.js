@@ -71,63 +71,72 @@ function activate(context) {
             }
         });
 
-        context.subscriptions.push(toggleCommand, commitNowCommand);
+        // Add test command for debugging
+        const testCommand = vscode.commands.registerCommand('autoGitCopilot.test', () => {
+            try {
+                vscode.window.showInformationMessage('Auto Git: Test command executed!');
+                console.log('Auto Git: Test command executed successfully');
+                console.log('Auto Git: Current enabled state:', isEnabled);
+                console.log('Auto Git: Workspace path:', workspacePath);
+            } catch (error) {
+                console.error('Error in test command:', error);
+            }
+        });
+
+        context.subscriptions.push(toggleCommand, commitNowCommand, testCommand);
         console.log('Auto Git: Commands registered successfully');
 
         // Register file save listener with delay
         setTimeout(() => {
             try {
-                if (vscode.workspace && typeof vscode.workspace.onDidSaveDocument === 'function') {
-                    const saveListener = vscode.workspace.onDidSaveDocument((document) => {
-                        if (!isEnabled) return;
-                        
-                        const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
-                        if (!workspaceFolder) return;
+                console.log('Auto Git: Registering file save listener...');
+                
+                const saveListener = vscode.workspace.onDidSaveDocument((document) => {
+                    if (!isEnabled) return;
+                    
+                    const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri);
+                    if (!workspaceFolder) return;
 
-                        // Check if file should be excluded
-                        const config = vscode.workspace.getConfiguration('autoGitCopilot');
-                        const excludePatterns = config.get('excludePatterns', []);
-                        const relativePath = path.relative(workspaceFolder.uri.fsPath, document.uri.fsPath);
-                        
-                        const shouldExclude = excludePatterns.some(pattern => {
-                            try {
-                                const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
-                                return regex.test(relativePath);
-                            } catch (regexError) {
-                                console.warn(`Auto Git: Invalid pattern ${pattern}:`, regexError);
-                                return false;
-                            }
-                        });
-
-                        if (shouldExclude) {
-                            console.log(`Auto Git: Excluding file ${relativePath}`);
-                            return;
+                    // Check if file should be excluded
+                    const config = vscode.workspace.getConfiguration('autoGitCopilot');
+                    const excludePatterns = config.get('excludePatterns', []);
+                    const relativePath = path.relative(workspaceFolder.uri.fsPath, document.uri.fsPath);
+                    
+                    const shouldExclude = excludePatterns.some(pattern => {
+                        try {
+                            const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
+                            return regex.test(relativePath);
+                        } catch (regexError) {
+                            console.warn(`Auto Git: Invalid pattern ${pattern}:`, regexError);
+                            return false;
                         }
-
-                        console.log(`Auto Git: File saved, scheduling commit: ${relativePath}`);
-
-                        // Debounce git operations
-                        if (pendingTimeout) {
-                            clearTimeout(pendingTimeout);
-                        }
-
-                        const delay = config.get('delayMs', 3000);
-                        if (statusBarItem) {
-                            statusBarItem.text = `$(sync~spin) Auto Git: Pending...`;
-                        }
-                        
-                        pendingTimeout = setTimeout(() => {
-                            performGitOperations();
-                            pendingTimeout = null;
-                        }, delay);
                     });
 
-                    context.subscriptions.push(saveListener);
-                    console.log('Auto Git: File save listener registered successfully');
-                } else {
-                    console.warn('Auto Git: onDidSaveDocument API not available');
-                    vscode.window.showWarningMessage('Auto Git: File save detection not available in this VS Code version');
-                }
+                    if (shouldExclude) {
+                        console.log(`Auto Git: Excluding file ${relativePath}`);
+                        return;
+                    }
+
+                    console.log(`Auto Git: File saved, scheduling commit: ${relativePath}`);
+
+                    // Debounce git operations
+                    if (pendingTimeout) {
+                        clearTimeout(pendingTimeout);
+                    }
+
+                    const delay = config.get('delayMs', 3000);
+                    if (statusBarItem) {
+                        statusBarItem.text = `$(sync~spin) Auto Git: Pending...`;
+                    }
+                    
+                    pendingTimeout = setTimeout(() => {
+                        performGitOperations();
+                        pendingTimeout = null;
+                    }, delay);
+                });
+
+                context.subscriptions.push(saveListener);
+                console.log('Auto Git: File save listener registered successfully');
             } catch (error) {
                 console.error('Auto Git: Failed to register file save listener:', error);
                 vscode.window.showWarningMessage(`Auto Git: File save detection failed: ${error.message}`);
@@ -286,11 +295,16 @@ Guidelines:
 - Use present tense ("add" not "added")
 
 Examples:
-- "feat: add user authentication system"
-- "fix: resolve login validation bug"
-- "docs: update API documentation"
-- "refactor: simplify error handling logic"
-- "style: improve code formatting"
+- "feat: add user authentication system in file(s) -"
+- "fix: resolve login validation bug in file(s) -"
+- "docs: update API documentation in file(s) -"
+- "chore: update dependencies in file(s) -"
+- "refactor: simplify error handling logic in file(s) -"
+- "test: add unit tests for new feature in file(s) -"
+- "style: improve code formatting and readability in file(s) -"
+- "build: update build scripts for better performance in file(s) -"
+- "ci: configure CI pipeline for automated testing in file(s) -"
+- "perf: optimize image loading performance in file(s) -"
 - "test: add unit tests for user service"
 
 Generate only the commit message, no quotes or explanation.`;

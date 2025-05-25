@@ -1,9 +1,9 @@
 {
   "name": "auto-git-copilot",
-  "displayName": "Auto Git with Copilot",
+  "displayName": "Auto Git",
   "description": "Automatically stage, commit, and push changes with AI-generated commit messages using GitHub Copilot",
-  "version": "1.0.2",
-  "publisher": "Shreya Boyane",
+  "version": "1.0.3",
+  "publisher": "shreya-boyane",
   "license": "MIT",
   "author": {
     "name": "Shreya Boyane",
@@ -24,7 +24,6 @@
   "homepage": "https://github.com/Sonica-B/AutoGit#readme",
   "activationEvents": [],
   "main": "./extension.js",
- 
   "galleryBanner": {
     "color": "#2D2D30",
     "theme": "dark"
@@ -42,6 +41,12 @@
         "title": "Commit Changes Now",
         "category": "Auto Git",
         "icon": "$(git-commit)"
+      },
+      {
+        "command": "autoGitCopilot.test",
+        "title": "Test Extension",
+        "category": "Auto Git",
+        "icon": "$(debug)"
       }
     ],
     "menus": {
@@ -52,6 +57,10 @@
         },
         {
           "command": "autoGitCopilot.commitNow",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "autoGitCopilot.test",
           "when": "workspaceFolderCount > 0"
         }
       ]
