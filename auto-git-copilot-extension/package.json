@@ -7,8 +7,16 @@
   "engines": {
     "vscode": "^1.60.0"
   },
-  "categories": ["Other"],
-  "keywords": ["git", "auto-commit", "copilot", "ai", "automation"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "git",
+    "auto-commit",
+    "copilot",
+    "ai",
+    "automation"
+  ],
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -68,14 +76,16 @@
     }
   },
   "dependencies": {
-    "simple-git": "^3.20.0"
+    "simple-git": "^3.27.0"
   },
   "devDependencies": {
-    "@types/vscode": "^1.60.0",
-    "@types/node": "^16.x"
+    "@types/node": "^16.18.126",
+    "@types/vscode": "^1.100.0"
   },
   "scripts": {
-    "compile": "node_modules/.bin/tsc -p ./",
-    "watch": "node_modules/.bin/tsc -watch -p ./"
-  }
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "author": "",
+  "license": "ISC"
 }
