@@ -11,14 +11,16 @@ let git;
  * @param {vscode.ExtensionContext} context
  */
 function activate(context) {
-    console.log('Auto Git with Copilot extension is now active!');
-
-    // Initialize git
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    if (!workspaceFolders || workspaceFolders.length === 0) {
-        vscode.window.showWarningMessage('Auto Git: No workspace folder found');
-        return;
-    }
+    try {
+        console.log('Auto Git with Copilot extension is now active!');
+        
+        // Initialize git
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        if (!workspaceFolders || workspaceFolders.length === 0) {
+            console.log('Auto Git: No workspace folder found');
+            vscode.window.showWarningMessage('Auto Git: No workspace folder found');
+            return;
+        }
 
     git = simpleGit(workspaceFolders[0].uri.fsPath);
 
@@ -35,20 +37,34 @@ function activate(context) {
 
     // Register commands
     const toggleCommand = vscode.commands.registerCommand('autoGitCopilot.toggle', () => {
-        isEnabled = !isEnabled;
-        const config = vscode.workspace.getConfiguration('autoGitCopilot');
-        config.update('enabled', isEnabled, vscode.ConfigurationTarget.Workspace);
-        updateStatusBar();
-        vscode.window.showInformationMessage(`Auto Git ${isEnabled ? 'enabled' : 'disabled'}`);
+        try {
+            isEnabled = !isEnabled;
+            const config = vscode.workspace.getConfiguration('autoGitCopilot');
+            config.update('enabled', isEnabled, vscode.ConfigurationTarget.Workspace);
+            updateStatusBar();
+            vscode.window.showInformationMessage(`Auto Git ${isEnabled ? 'enabled' : 'disabled'}`);
+            console.log(`Auto Git toggled: ${isEnabled ? 'enabled' : 'disabled'}`);
+        } catch (error) {
+            console.error('Error in toggle command:', error);
+            vscode.window.showErrorMessage(`Auto Git toggle failed: ${error.message}`);
+        }
     });
 
     const commitNowCommand = vscode.commands.registerCommand('autoGitCopilot.commitNow', () => {
-        if (pendingTimeout) {
-            clearTimeout(pendingTimeout);
-            pendingTimeout = null;
+        try {
+            if (pendingTimeout) {
+                clearTimeout(pendingTimeout);
+                pendingTimeout = null;
+            }
+            performGitOperations();
+            console.log('Auto Git: Manual commit triggered');
+        } catch (error) {
+            console.error('Error in commit now command:', error);
+            vscode.window.showErrorMessage(`Auto Git commit failed: ${error.message}`);
         }
-        performGitOperations();
     });
+
+    console.log('Auto Git: Commands registered successfully');
 
     // Register file save listener
     const saveListener = vscode.workspace.onDidSaveDocument((document) => {
@@ -96,6 +112,14 @@ function activate(context) {
     });
 
     context.subscriptions.push(toggleCommand, commitNowCommand, saveListener, configListener);
+    
+    console.log('Auto Git extension activation completed successfully');
+    vscode.window.showInformationMessage('Auto Git extension loaded successfully!');
+    
+    } catch (error) {
+        console.error('Auto Git extension activation failed:', error);
+        vscode.window.showErrorMessage(`Auto Git extension failed to load: ${error.message}`);
+    }
 }
 
 function updateStatusBar() {
@@ -186,18 +210,10 @@ The commit message should:
 - Describe what was changed, not how
 
 Example formats:
-- "feat: add user authentication system in file(s)"
-- "fix: resolve login validation bug in file(s)"
-- "chore: update dependencies and clean up code"
-- "docs: update API documentation in file(s)"
-- "refactor: simplify user service logic in file(s)"
-- "test: add unit tests for user service in file(s)"
-- "style: improve code formatting and readability in file(s)"
-- "ci: update CI configuration for better testing in file(s)"
-- "build: update build scripts for better performance in file(s)"
-- "perf: optimize image loading in file(s)"
-- "revert: revert changes from commit <hash> in file(s)"
-- "release: v1.0.0 - Initial release with basic features in file(s)"`;
+- "feat: add user authentication system"
+- "fix: resolve login validation bug"
+- "docs: update API documentation"
+- "refactor: simplify user service logic"`;
 
         // Try to use Copilot Chat API
         const models = await vscode.lm.selectChatModels({

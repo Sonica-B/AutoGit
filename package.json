@@ -3,14 +3,20 @@
   "displayName": "Auto Git with Copilot",
   "description": "Automatically stage, commit, and push changes with AI-generated commit messages using Copilot",
   "version": "1.0.0",
-  "publisher": "shreya-boyane",
-  "license": "MIT",
-  "licenseText": "MIT License",
+  "publisher": "Shreya Boyane",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.74.0"
   },
-  "categories": ["Other"],
-  "keywords": ["git", "auto-commit", "copilot", "ai", "automation"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "git",
+    "auto-commit",
+    "copilot",
+    "ai",
+    "automation"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Sonica-B/AutoGit.git"
@@ -20,7 +26,10 @@
   },
   "homepage": "https://github.com/Sonica-B/AutoGit#readme",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:autoGitCopilot.toggle",
+    "onCommand:autoGitCopilot.commitNow",
+    "workspaceContains:.git"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -81,8 +90,8 @@
     "simple-git": "^3.20.0"
   },
   "devDependencies": {
-    "@types/vscode": "^1.60.0",
-    "@types/node": "^16.x"
+    "@types/node": "^16.x",
+    "@types/vscode": "^1.85.0"
   },
   "scripts": {
     "compile": "node_modules/.bin/tsc -p ./",

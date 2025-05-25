@@ -2,7 +2,7 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "es2020",
-    "outDir": "../out",
+    "outDir": "out",
     "lib": ["es2020"],
     "sourceMap": true,
     "rootDir": ".",
@@ -18,11 +18,11 @@
   "include": [
     "*.js",
     "*.ts"
-, "../extension.js"  ],
+  ],
   "exclude": [
     "node_modules",
     ".vscode-test",
-    "../out",
+    "out",
     "**/*.vsix"
   ]
 }
