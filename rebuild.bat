@@ -1,8 +1,8 @@
 @echo off
-echo Building Auto Git Extension...
+echo Building Auto Git Extension v1.0.6 with improved ignore handling...
 
 REM Navigate to extension directory
-cd /d "D:\WPI Assignments\AutoGit_Extension"
+cd /d "D:\WPI Assignments\AutoGit_Extension\auto-git-copilot-extension"
 
 REM Clean previous builds
 echo Cleaning previous builds...
@@ -29,6 +29,13 @@ for %%f in (auto-git-copilot-*.vsix) do (
 
 echo.
 echo Extension rebuild complete!
+echo.
+echo CHANGES IN v1.0.6:
+echo - Properly excludes .git internal files
+echo - Respects .gitignore and exclude patterns
+echo - Individual file staging instead of 'git add .'
+echo - Enhanced filtering to prevent git internal commits
+echo.
 echo Please restart VS Code to apply changes.
 echo.
 pause
