@@ -3,7 +3,7 @@ echo QUICK FIX: Resolving shouldExcludeFile error...
 echo.
 
 REM Navigate to extension directory
-cd /d "D:\WPI Assignments\AutoGit_Extension\auto-git-copilot-extension"
+cd /d "D:\WPI Assignments\AutoGit_Extension"
 
 echo Cleaning previous builds...
 if exist "*.vsix" del "*.vsix"

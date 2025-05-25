@@ -115,7 +115,12 @@
             ".DS_Store",
             "Thumbs.db",
             "*.vsix",
-            ".vscode-test/**"
+            ".vscode-test/**",
+            "coverage/**",
+            "*.lock",
+            ".git/",
+            ".gitignore",
+            ".gitattributes"
           ],
           "description": "File patterns to exclude from auto-commit (glob patterns supported)",
           "order": 5
