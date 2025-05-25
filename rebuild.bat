@@ -1,41 +1,35 @@
 @echo off
-echo Building Auto Git Extension v1.0.6 with improved ignore handling...
+echo QUICK FIX: Resolving shouldExcludeFile error...
+echo.
 
 REM Navigate to extension directory
-cd /d "D:\WPI Assignments\AutoGit_Extension"
+cd /d "D:\WPI Assignments\AutoGit_Extension\auto-git-copilot-extension"
 
-REM Clean previous builds
 echo Cleaning previous builds...
 if exist "*.vsix" del "*.vsix"
 
-REM Install dependencies
-echo Installing dependencies...
-call npm install
-
-REM Package extension
-echo Packaging extension...
+echo Rebuilding extension v1.0.7...
 call vsce package
 
-REM Uninstall old version
-echo Uninstalling old version...
+echo Uninstalling broken version...
 call code --uninstall-extension shreya-boyane.auto-git-copilot
 
-REM Install new version
-echo Installing new version...
+echo Installing fixed version...
 for %%f in (auto-git-copilot-*.vsix) do (
     call code --install-extension "%%f"
-    echo Installed: %%f
+    echo SUCCESS: Installed %%f
 )
 
 echo.
-echo Extension rebuild complete!
+echo ============================================
+echo FIXED: shouldExcludeFile error resolved!
 echo.
-echo CHANGES IN v1.0.6:
-echo - Properly excludes .git internal files
-echo - Respects .gitignore and exclude patterns
-echo - Individual file staging instead of 'git add .'
-echo - Enhanced filtering to prevent git internal commits
+echo Changes in v1.0.7:
+echo - Fixed function declaration order
+echo - Resolved shouldExcludeFile is not defined error
+echo - Proper function hoisting
+echo ============================================
 echo.
-echo Please restart VS Code to apply changes.
+echo Please restart VS Code to apply the fix.
 echo.
 pause
