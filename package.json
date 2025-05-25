@@ -1,0 +1,91 @@
+{
+  "name": "auto-git-copilot",
+  "displayName": "Auto Git with Copilot",
+  "description": "Automatically stage, commit, and push changes with AI-generated commit messages using Copilot",
+  "version": "1.0.0",
+  "publisher": "shreya-boyane",
+  "license": "MIT",
+  "licenseText": "MIT License",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "keywords": ["git", "auto-commit", "copilot", "ai", "automation"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Sonica-B/AutoGit.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Sonica-B/AutoGit/issues"
+  },
+  "homepage": "https://github.com/Sonica-B/AutoGit#readme",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "autoGitCopilot.toggle",
+        "title": "Toggle Auto Git",
+        "category": "Auto Git"
+      },
+      {
+        "command": "autoGitCopilot.commitNow",
+        "title": "Commit Changes Now",
+        "category": "Auto Git"
+      }
+    ],
+    "configuration": {
+      "title": "Auto Git with Copilot",
+      "properties": {
+        "autoGitCopilot.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable automatic git operations on file save"
+        },
+        "autoGitCopilot.delayMs": {
+          "type": "number",
+          "default": 3000,
+          "description": "Delay in milliseconds before triggering git operations after file save"
+        },
+        "autoGitCopilot.includeUntracked": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include untracked files in automatic commits"
+        },
+        "autoGitCopilot.maxCommitMessageLength": {
+          "type": "number",
+          "default": 72,
+          "description": "Maximum length for commit messages"
+        },
+        "autoGitCopilot.excludePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules/**",
+            ".git/**",
+            "*.log",
+            ".env*",
+            "dist/**",
+            "build/**"
+          ],
+          "description": "File patterns to exclude from auto-commit"
+        }
+      }
+    }
+  },
+  "dependencies": {
+    "simple-git": "^3.20.0"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.60.0",
+    "@types/node": "^16.x"
+  },
+  "scripts": {
+    "compile": "node_modules/.bin/tsc -p ./",
+    "watch": "node_modules/.bin/tsc -watch -p ./"
+  }
+}
