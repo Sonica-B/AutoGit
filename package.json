@@ -2,7 +2,7 @@
   "name": "auto-git-copilot",
   "displayName": "Auto Git",
   "description": "Automatically stage, commit, and push changes with AI-generated commit messages using GitHub Copilot",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "publisher": "shreya-boyane",
   "license": "MIT",
   "author": {
@@ -104,8 +104,8 @@
             "type": "string"
           },
           "default": [
-            "node_modules/**",
             ".git/**",
+            "node_modules/**",
             "*.log",
             ".env*",
             "dist/**",
@@ -115,7 +115,12 @@
             ".DS_Store",
             "Thumbs.db",
             "*.vsix",
-            ".vscode-test/**"
+            ".vscode-test/**",
+            "coverage/**",
+            "*.lock",
+            ".git/",
+            ".gitignore",
+            ".gitattributes"
           ],
           "description": "File patterns to exclude from auto-commit (glob patterns supported)",
           "order": 5
