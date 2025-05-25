@@ -3,7 +3,7 @@
   "displayName": "Auto Git with Copilot",
   "description": "Automatically stage, commit, and push changes with AI-generated commit messages using Copilot",
   "version": "1.0.0",
-  "publisher": "your-publisher-name",
+  "publisher": "shreya-boyane",
   "engines": {
     "vscode": "^1.60.0"
   },
