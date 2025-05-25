@@ -2,7 +2,7 @@
 echo Building Auto Git Extension v1.0.6 with improved ignore handling...
 
 REM Navigate to extension directory
-cd /d "D:\WPI Assignments\AutoGit_Extension\auto-git-copilot-extension"
+cd /d "D:\WPI Assignments\AutoGit_Extension"
 
 REM Clean previous builds
 echo Cleaning previous builds...
