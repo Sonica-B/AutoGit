@@ -1,6 +1,6 @@
 {
   "name": "auto-git-copilot",
-  "displayName": "Auto Git",
+  "displayName": "Auto Git ",
   "description": "Automatically stage, commit, and push changes with AI-generated commit messages using GitHub Copilot",
   "version": "1.0.5",
   "publisher": "ShreyaBoyane",
