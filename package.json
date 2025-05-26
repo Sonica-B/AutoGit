@@ -5,6 +5,7 @@
   "version": "1.0.5",
   "publisher": "ShreyaBoyane",
   "license": "Apache-2.0 license",
+  "icon": "icon.png",
   "author": {
     "name": "Shreya Boyane",
     "email": "shreya.boyane@gmail.com"
