@@ -1,10 +1,11 @@
 {
   "name": "auto-git-copilot",
-  "displayName": "Auto Git",
+  "displayName": "AutoGit-AI",
   "description": "Automatically stage, commit, and push changes with AI-generated commit messages using GitHub Copilot",
-  "version": "1.0.5",
-  "publisher": "shreya-boyane",
-  "license": "MIT",
+  "version": "1.0.6",
+  "publisher": "ShreyaBoyane",
+  "license": "Apache-2.0 license",
+  "icon": "icon.png",
   "author": {
     "name": "Shreya Boyane",
     "email": "shreya.boyane@gmail.com"
