@@ -153,3 +153,5 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+.vscode/*
+.vscode/settings.json

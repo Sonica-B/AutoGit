@@ -254,7 +254,7 @@ This extension is open for contributions! Feel free to:
 
 ## 📄 License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+Apache-2.0 license - see [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
@@ -263,6 +263,12 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - The open-source community for inspiration and feedback
 
 ## 📝 Version History
+
+### 1.0.5 (Latest)
+- ✅ Fixed function declaration order
+- ✅ Resolved shouldExcludeFile is not defined error
+- ✅ Proper function hoisting
+
 
 ### 1.0.2 (Latest)
 - ✅ Full AI-powered commit message generation with GitHub Copilot

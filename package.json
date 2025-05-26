@@ -4,7 +4,7 @@
   "description": "Automatically stage, commit, and push changes with AI-generated commit messages using GitHub Copilot",
   "version": "1.0.5",
   "publisher": "ShreyaBoyane",
-  "license": "MIT",
+  "license": "Apache-2.0 license",
   "author": {
     "name": "Shreya Boyane",
     "email": "shreya.boyane@gmail.com"
