@@ -20,15 +20,7 @@ for %%f in (auto-git-copilot-*.vsix) do (
     echo SUCCESS: Installed %%f
 )
 
-echo.
-echo ============================================
-echo FIXED: shouldExcludeFile error resolved!
-echo.
-echo Changes in v1.0.7:
-echo - Fixed function declaration order
-echo - Resolved shouldExcludeFile is not defined error
-echo - Proper function hoisting
-echo ============================================
+
 echo.
 echo Please restart VS Code to apply the fix.
 echo.
