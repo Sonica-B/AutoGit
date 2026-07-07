@@ -57,14 +57,44 @@ Alternatively run `rebuild.bat` on Windows to do steps 3–4 in one go.
 4. Toggle it on, save a file, and watch: `Pending (1)` → `Working...` → `ON`
 5. Check `git log --oneline -3` for the new commit
 
-## Publishing to the Marketplace (optional)
+## Publishing to the Marketplace
 
-1. Create a publisher account: https://marketplace.visualstudio.com/manage
-2. Get a Personal Access Token from Azure DevOps
-3. ```bash
-   npx @vscode/vsce login <publisher-name>
-   npx @vscode/vsce publish
-   ```
+Publishing is automated by [`.github/workflows/publish.yml`](.github/workflows/publish.yml).
+It runs on any version tag (`v*.*.*`): it lints, type-checks, and tests, verifies
+the tag matches `package.json`, packages the VSIX, publishes to the VS Code
+Marketplace (and Open VSX if configured), and attaches the VSIX to a GitHub
+Release.
+
+### One-time setup
+
+1. Create a publisher (`ShreyaBoyane`) at https://marketplace.visualstudio.com/manage
+2. Create an Azure DevOps **Personal Access Token** with the *Marketplace →
+   Manage* scope
+3. Add it as a repository secret named **`VSCE_PAT`**
+   (GitHub repo → Settings → Secrets and variables → Actions → New repository secret)
+4. *(Optional, for Cursor / VSCodium / Windsurf users)* create an
+   [Open VSX](https://open-vsx.org/) token and add it as **`OVSX_PAT`**. If this
+   secret is absent, the Open VSX step is skipped automatically.
+
+### Cutting a release
+
+```bash
+# 1. Bump the version in package.json (e.g. 1.3.0 -> 1.3.1) and commit to main
+# 2. Tag and push — this triggers the publish workflow:
+git tag v1.3.1
+git push origin v1.3.1
+```
+
+The tag **must** match `package.json`'s `version` or the workflow fails before
+publishing anything. To rehearse without publishing, run the workflow manually
+from the Actions tab with **Run workflow → dry_run = true**.
+
+### Manual publish (fallback)
+
+```bash
+npx @vscode/vsce login ShreyaBoyane   # paste your PAT once
+npx @vscode/vsce publish              # publishes the version in package.json
+```
 
 ## Troubleshooting
 
