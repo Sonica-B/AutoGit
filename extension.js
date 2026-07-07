@@ -1,17 +1,21 @@
 const vscode = require('vscode');
 const path = require('path');
+const crypto = require('crypto');
 
 const { compilePatterns, isExcluded } = require('./lib/patterns');
 const {
-    parseGitStatus,
-    generateFallbackCommitMessage,
+    parseStatusZ,
+    generateFallbackFromEntries,
     buildCommitPrompt,
     sanitizeAiMessage
 } = require('./lib/commitMessage');
 const { GitService } = require('./lib/gitService');
+const { scanDiff, compileIgnorePatterns } = require('./lib/secretScanner');
 
 const CONFIG_SECTION = 'autoGitCopilot';
 const AI_REQUEST_TIMEOUT_MS = 20_000;
+/** Above this many changed lines, skip fetching the full diff to scan. */
+const SECRET_SCAN_MAX_LINES = 50_000;
 
 /** @type {vscode.OutputChannel | undefined} */
 let outputChannel;
@@ -24,6 +28,8 @@ let git;
 
 let isEnabled = false;
 let workspacePath = '';
+/** Workspace folder relative to the repo root ('' when at the root). */
+let scopePrefix = '';
 const changeTracker = new Set();
 /** @type {RegExp[]} */
 let compiledExcludes = [];
@@ -32,6 +38,13 @@ let compiledExcludes = [];
 // scheduled one is running). If changes arrive mid-run, we run once more.
 let isRunning = false;
 let rerunRequested = false;
+
+// Fingerprint (hash of the staged diff) the user approved via "Commit Anyway".
+// The scan is skipped only for the exact content that was reviewed; any other
+// staged content still gets scanned, so a stale approval can never leak a new
+// secret. Cleared on consumption and when the extension is disabled.
+/** @type {string | null} */
+let approvedFingerprint = null;
 
 /** @param {string} message */
 function log(message) {
@@ -82,7 +95,7 @@ function refreshCompiledExcludes() {
 /**
  * @param {vscode.ExtensionContext} context
  */
-function activate(context) {
+async function activate(context) {
     outputChannel = vscode.window.createOutputChannel('Auto Git');
     context.subscriptions.push(outputChannel);
     log('Auto Git extension activating...');
@@ -98,8 +111,13 @@ function activate(context) {
     if (workspaceFolders.length > 1) {
         log(`Multi-root workspace detected; using first folder: ${workspacePath}`);
     }
-    git = new GitService(workspacePath, (msg) => log(msg));
-    log(`Workspace initialized: ${workspacePath}`);
+
+    // Resolve the repository root so all git commands run from a consistent
+    // location, and compute the workspace's path within the repo so operations
+    // stay scoped to it (a workspace that is a subdirectory of a larger repo
+    // must not sweep in unrelated changes).
+    git = await createGitService(workspacePath);
+    log(`Workspace initialized: ${workspacePath} (repo scope: ${scopePrefix || '.'})`);
 
     statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     statusBarItem.command = 'autoGitCopilot.toggle';
@@ -129,6 +147,42 @@ function activate(context) {
     );
 
     log('Auto Git extension activated.');
+}
+
+/**
+ * Build a GitService rooted at the repository containing `folder`, scoped to
+ * that folder. Falls back to the folder itself if the repo root cannot be
+ * resolved (e.g. not a repo yet, or git missing) — the pipeline then surfaces
+ * the specific error on first run.
+ * @param {string} folder
+ * @returns {Promise<GitService>}
+ */
+async function createGitService(folder) {
+    const probe = new GitService(folder, (msg) => log(msg));
+    try {
+        const root = await probe.repositoryRoot();
+        const rel = path.relative(root, folder).replace(/\\/g, '/');
+        scopePrefix = rel && rel !== '.' && !rel.startsWith('..') ? rel : '';
+        const scope = scopePrefix === '' ? '.' : scopePrefix;
+        return new GitService(root, (msg) => log(msg), scope);
+    } catch (err) {
+        scopePrefix = '';
+        log(`Could not resolve repository root (${errorText(err)}); operating on the workspace folder.`);
+        return probe;
+    }
+}
+
+/**
+ * Convert a repo-root-relative path to one relative to the workspace folder,
+ * so exclude patterns are matched with the same base as the file watcher.
+ * @param {string} repoRelativePath
+ * @returns {string}
+ */
+function toWorkspaceRelative(repoRelativePath) {
+    if (scopePrefix && repoRelativePath.startsWith(`${scopePrefix}/`)) {
+        return repoRelativePath.slice(scopePrefix.length + 1);
+    }
+    return repoRelativePath;
 }
 
 /**
@@ -185,6 +239,7 @@ function setEnabled(enabled, { persist }) {
     if (!enabled) {
         clearPendingTimeout();
         changeTracker.clear();
+        approvedFingerprint = null;
     }
     updateStatusBar();
     notify('info', `Auto Git ${enabled ? 'enabled' : 'disabled'}`);
@@ -296,9 +351,31 @@ async function runGitPipeline(gitSvc) {
             statusBarItem.text = '$(sync~spin) Auto Git: Working...';
         }
 
+        // isRepository throws on a missing git binary (mapped to a clear
+        // message below); it returns false only for a genuine non-repo.
         if (!(await gitSvc.isRepository())) {
             log('Not a git repository; skipping.');
             notify('error', 'Auto Git: This workspace is not a git repository.');
+            updateStatusBar();
+            return;
+        }
+
+        // Do not auto-commit while a merge/rebase/cherry-pick/revert is in
+        // progress: staging would record conflict markers and complete the
+        // operation with a corrupted tree.
+        const pending = await gitSvc.pendingOperation();
+        if (pending) {
+            log(`A ${pending} is in progress; skipping auto-commit until it is resolved.`);
+            notify('warn', `Auto Git: Skipped — a ${pending} is in progress. Finish it first.`);
+            updateStatusBar();
+            return;
+        }
+
+        // Never commit onto a detached HEAD (checked-out tag/commit, mid-bisect):
+        // it would create orphan commits and cannot be pushed.
+        if (await gitSvc.isDetachedHead()) {
+            log('HEAD is detached; skipping auto-commit.');
+            notify('warn', 'Auto Git: Skipped — HEAD is detached (not on a branch).');
             updateStatusBar();
             return;
         }
@@ -307,7 +384,7 @@ async function runGitPipeline(gitSvc) {
         const protectedBranches = /** @type {string[]} */ (config.get('protectedBranches', []));
         if (protectedBranches.length > 0) {
             const branch = await gitSvc.currentBranch();
-            if (protectedBranches.includes(branch)) {
+            if (branch && protectedBranches.includes(branch)) {
                 log(`Branch "${branch}" is protected; skipping auto-commit.`);
                 notify('warn', `Auto Git: Skipped commit — branch "${branch}" is protected.`);
                 updateStatusBar();
@@ -315,21 +392,37 @@ async function runGitPipeline(gitSvc) {
             }
         }
 
-        const statusOutput = await gitSvc.status();
-        if (!statusOutput.trim()) {
-            log('No changes to commit.');
+        // Decide exactly which paths to stage: scoped to the workspace,
+        // honoring includeUntracked, and filtered through excludePatterns so
+        // excluded files (.env, dist, logs) are never committed even when an
+        // included file triggers the run.
+        const stageEntries = await selectPathsToStage(gitSvc, config);
+        if (stageEntries.length === 0) {
+            log('No eligible (non-excluded) changes to stage.');
             updateStatusBar();
             return;
         }
 
-        await gitSvc.stageAll(config.get('includeUntracked', true));
+        const paths = [];
+        for (const entry of stageEntries) {
+            paths.push(entry.path);
+            if (entry.origPath) paths.push(entry.origPath);
+        }
+        await gitSvc.stagePaths(paths);
+
         if (!(await gitSvc.hasStagedChanges())) {
             log('Nothing staged after applying filters; skipping commit.');
             updateStatusBar();
             return;
         }
 
-        const commitMessage = await generateCommitMessage(statusOutput, gitSvc);
+        if (!(await guardAgainstSecrets(gitSvc))) {
+            log('Commit blocked by secret scan.');
+            updateStatusBar();
+            return;
+        }
+
+        const commitMessage = await generateCommitMessage(stageEntries, gitSvc);
         log(`Commit message: "${commitMessage}"`);
         await gitSvc.commit(commitMessage);
         log('Changes committed.');
@@ -356,15 +449,207 @@ async function runGitPipeline(gitSvc) {
 }
 
 /**
+ * Determine which changed paths should be staged: scoped to the workspace,
+ * respecting includeUntracked, and excluding anything matching the configured
+ * exclude patterns (matched against workspace-relative paths, as the watcher
+ * does).
+ * @param {GitService} gitSvc
+ * @param {vscode.WorkspaceConfiguration} config
+ * @returns {Promise<{ path: string, origPath?: string, code: string, status: string }[]>}
+ */
+async function selectPathsToStage(gitSvc, config) {
+    const includeUntracked = config.get('includeUntracked', true);
+    const entries = parseStatusZ(await gitSvc.statusZ());
+
+    return entries.filter((entry) => {
+        if (!includeUntracked && entry.status === 'Untracked') {
+            return false;
+        }
+        if (isExcluded(toWorkspaceRelative(entry.path), compiledExcludes)) {
+            log(`Excluding ${entry.path} from commit (matches an exclude pattern).`);
+            return false;
+        }
+        if (entry.origPath && isExcluded(toWorkspaceRelative(entry.origPath), compiledExcludes)) {
+            return false;
+        }
+        return true;
+    });
+}
+
+/** @param {unknown} err */
+function isMaxBufferError(err) {
+    const e = /** @type {any} */ (err);
+    return !!e && (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || /maxBuffer/i.test(e.message || ''));
+}
+
+/** @param {string} text */
+function sha256(text) {
+    return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+/**
+ * Scan the staged diff for secrets before committing. Returns true when the
+ * pipeline may proceed. Security notifications intentionally bypass the
+ * notificationLevel setting — the secret gate must never fail silently.
+ *
+ * The commit is BLOCKED (fail closed) both when a secret is found and when the
+ * diff cannot be scanned (too large). The user can override per exact content
+ * via "Commit Anyway", which records a fingerprint of the reviewed diff; a new
+ * or different staged change is always scanned again.
+ * @param {GitService} gitSvc
+ * @returns {Promise<boolean>}
+ */
+async function guardAgainstSecrets(gitSvc) {
+    const config = getConfig();
+    if (!config.get('scanForSecrets', true)) {
+        return true;
+    }
+
+    /** @type {string | null} */
+    let diff = null;
+    let fingerprint;
+    try {
+        const lineCount = await gitSvc.stagedDiffLineCount();
+        if (lineCount > SECRET_SCAN_MAX_LINES) {
+            fingerprint = `oversize:${sha256(String(lineCount))}:${await stagedNameFingerprint(gitSvc)}`;
+        } else {
+            diff = await gitSvc.stagedDiff();
+            fingerprint = sha256(diff);
+        }
+    } catch (err) {
+        if (!isMaxBufferError(err)) throw err;
+        fingerprint = `oversize:${await stagedNameFingerprint(gitSvc)}`;
+    }
+
+    // Consume a prior approval, but only for the exact content it covered.
+    if (approvedFingerprint && approvedFingerprint === fingerprint) {
+        approvedFingerprint = null;
+        log('Secret scan skipped: user approved this exact staged content.');
+        return true;
+    }
+
+    if (diff === null) {
+        return blockUnscannable(
+            fingerprint,
+            'The staged change is too large to scan for secrets safely.'
+        );
+    }
+
+    const ignorePatterns = compileIgnorePatterns(
+        /** @type {string[]} */ (config.get('secretScanIgnorePatterns', [])),
+        (msg) => log(`WARN: ${msg}`)
+    );
+    const result = scanDiff(diff, {
+        ignorePatterns,
+        onSuppressed: (f) =>
+            log(`Secret finding suppressed by ignore pattern: ${f.file}:${f.line} [${f.ruleId}]`)
+    });
+
+    if (result.suppressedCount > 0) {
+        log(`${result.suppressedCount} secret finding(s) suppressed by ignore patterns.`);
+    }
+    if (result.skipped) {
+        return blockUnscannable(
+            fingerprint,
+            'The staged change is too large to scan for secrets safely.'
+        );
+    }
+    if (result.findings.length === 0) {
+        return true;
+    }
+
+    for (const finding of result.findings) {
+        log(
+            `SECRET BLOCKED: ${finding.description} [${finding.ruleId}] at ${finding.file}:${finding.line} (${finding.preview})`
+        );
+    }
+    if (result.truncated) {
+        log(`WARN: Secret findings truncated at ${result.findings.length}; fix and re-run for a full report.`);
+    }
+
+    const first = result.findings[0];
+    const summary =
+        result.findings.length === 1
+            ? `${first.description} in ${first.file}:${first.line}`
+            : `${result.findings.length} potential secrets (first: ${first.file}:${first.line})`;
+
+    promptOverride(
+        `Auto Git blocked the commit: ${summary}. Remove it, add an ignore pattern, or commit anyway.`,
+        fingerprint
+    );
+    return false;
+}
+
+/**
+ * A short, stable fingerprint of the staged file set, used when the full diff
+ * cannot be hashed (too large to fetch).
+ * @param {GitService} gitSvc
+ * @returns {Promise<string>}
+ */
+async function stagedNameFingerprint(gitSvc) {
+    try {
+        const stat = await gitSvc.stagedDiffStat();
+        return sha256(stat);
+    } catch {
+        return sha256('unknown-staged-set');
+    }
+}
+
+/**
+ * Block a commit that could not be scanned and offer an override.
+ * @param {string} fingerprint
+ * @param {string} reason
+ * @returns {boolean} always false (fail closed)
+ */
+function blockUnscannable(fingerprint, reason) {
+    log(`WARN: ${reason} Commit blocked until confirmed.`);
+    promptOverride(`Auto Git: ${reason} Commit anyway?`, fingerprint);
+    return false;
+}
+
+/**
+ * Show the blocking warning with a "Commit Anyway" override bound to the exact
+ * reviewed content via its fingerprint.
+ * @param {string} message
+ * @param {string} fingerprint
+ */
+function promptOverride(message, fingerprint) {
+    vscode.window
+        .showWarningMessage(message, 'Show Logs', 'Commit Anyway')
+        .then((choice) => {
+            if (choice === 'Show Logs' && outputChannel) {
+                outputChannel.show(true);
+            } else if (choice === 'Commit Anyway') {
+                log('User approved committing this staged content despite the secret gate.');
+                approvedFingerprint = fingerprint;
+                performGitOperations();
+            }
+        });
+}
+
+/**
  * Map raw git errors to actionable messages. Returns '' for benign cases.
  * @param {any} error
  * @returns {string}
  */
 function friendlyErrorMessage(error) {
+    if (error && error.code === 'ENOENT') {
+        return 'Git was not found on your PATH. Install Git and restart VS Code.';
+    }
+    if (error && error.detachedHead) {
+        return 'HEAD is detached — checkout a branch before auto-committing.';
+    }
+    if (error && error.noRemote) {
+        return 'No remote configured. Add one with "git remote add origin <url>" or disable autoPush.';
+    }
+
     const text = `${(error && error.message) || ''} ${(error && error.stderr) || ''}`;
 
     if (text.includes('nothing to commit')) {
         return '';
+    }
+    if (isMaxBufferError(error)) {
+        return 'A staged file is too large to process. Add it to .gitignore or your exclude patterns.';
     }
     if (text.includes('Permission denied') || /authentication|could not read Username/i.test(text)) {
         return 'Git authentication failed. Check your SSH keys or credentials.';
@@ -372,8 +657,8 @@ function friendlyErrorMessage(error) {
     if (/remote rejected|non-fast-forward|fetch first/i.test(text)) {
         return 'Push rejected by remote — pull the latest changes first.';
     }
-    if (/no configured push destination|does not appear to be a git repository/i.test(text)) {
-        return 'No remote configured. Add one with "git remote add origin <url>" or disable autoPush.';
+    if (/does not appear to be a git repository|no configured push destination|could not read from remote/i.test(text)) {
+        return 'Push failed — check that a reachable remote is configured, or disable autoPush.';
     }
     if (/user.name|user.email|Please tell me who you are/i.test(text)) {
         return 'Git identity not configured. Run "git config --global user.name/user.email".';
@@ -383,23 +668,24 @@ function friendlyErrorMessage(error) {
 
 /**
  * Generate a commit message, preferring the Copilot language model API and
- * falling back to a deterministic summary.
- * @param {string} statusOutput
+ * falling back to a deterministic summary. Driven by the exact set of staged
+ * entries so the message always matches what is committed.
+ * @param {{ path: string, status: string, code: string }[]} entries
  * @param {GitService} gitSvc
  * @returns {Promise<string>}
  */
-async function generateCommitMessage(statusOutput, gitSvc) {
+async function generateCommitMessage(entries, gitSvc) {
     const config = getConfig();
-    const maxLength = config.get('maxCommitMessageLength', 72);
+    const maxLength = /** @type {number} */ (config.get('maxCommitMessageLength', 72));
 
     if (!config.get('useAI', true)) {
-        return generateFallbackCommitMessage(statusOutput);
+        return generateFallbackFromEntries(entries);
     }
 
     try {
         if (!vscode.lm || typeof vscode.lm.selectChatModels !== 'function') {
             log('Language Model API unavailable; using fallback commit message.');
-            return generateFallbackCommitMessage(statusOutput);
+            return generateFallbackFromEntries(entries);
         }
 
         // Prefer any available Copilot model; do not pin a model family so the
@@ -410,13 +696,12 @@ async function generateCommitMessage(statusOutput, gitSvc) {
         }
         if (!models || models.length === 0) {
             log('No language models available; using fallback commit message.');
-            return generateFallbackCommitMessage(statusOutput);
+            return generateFallbackFromEntries(entries);
         }
 
         const model = models[0];
         log(`Using language model: ${model.vendor}/${model.family}`);
 
-        const entries = parseGitStatus(statusOutput);
         let diffStat = '';
         try {
             diffStat = await gitSvc.stagedDiffStat();
@@ -454,7 +739,7 @@ async function generateCommitMessage(statusOutput, gitSvc) {
         log(`WARN: AI commit message failed (${errorText(error)}); using fallback.`);
     }
 
-    return generateFallbackCommitMessage(statusOutput);
+    return generateFallbackFromEntries(entries);
 }
 
 function deactivate() {

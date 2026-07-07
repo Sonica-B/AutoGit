@@ -38,7 +38,7 @@ npx @vscode/vsce package
 
 # 4. Install in VS Code
 code --uninstall-extension ShreyaBoyane.auto-git-copilot
-code --install-extension auto-git-copilot-1.1.0.vsix
+code --install-extension auto-git-copilot-*.vsix
 ```
 
 Alternatively run `rebuild.bat` on Windows to do steps 3–4 in one go.

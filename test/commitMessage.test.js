@@ -124,3 +124,67 @@ test('sanitizeAiMessage returns empty string for unusable input', () => {
     assert.equal(sanitizeAiMessage(undefined), '');
     assert.equal(sanitizeAiMessage(null), '');
 });
+
+// --- regression tests for v1.3.0 fixes --------------------------------------
+
+const {
+    parseStatusZ,
+    decodePorcelainPath,
+    generateFallbackFromEntries
+} = require('../lib/commitMessage');
+
+test('arrow split applies only to rename/copy entries', () => {
+    // A modified file whose name legitimately contains " -> " must not be split.
+    const entries = parseGitStatus(' M weird -> name.js');
+    assert.equal(entries[0].path, 'weird -> name.js');
+    assert.equal(entries[0].status, 'Modified');
+});
+
+test('rename entries are still split to the destination path', () => {
+    const entries = parseGitStatus('R  old.js -> new.js');
+    assert.equal(entries[0].path, 'new.js');
+    assert.equal(entries[0].status, 'Renamed');
+});
+
+test('decodePorcelainPath decodes C-style octal-escaped non-ASCII paths', () => {
+    // git quotes "café/config.js" as "caf\303\251/config.js" with quotepath on.
+    assert.equal(decodePorcelainPath('"caf\\303\\251/config.js"'), 'café/config.js');
+    assert.equal(decodePorcelainPath('"tab\\there.txt"'), 'tab\there.txt');
+    assert.equal(decodePorcelainPath('plain.txt'), 'plain.txt');
+});
+
+test('parseGitStatus decodes quoted non-ASCII filenames', () => {
+    const entries = parseGitStatus(' M "caf\\303\\251/config.js"');
+    assert.equal(entries[0].path, 'café/config.js');
+});
+
+test('parseStatusZ parses NUL-delimited entries including renames', () => {
+    const z = ' M src/app.js\0?? new.txt\0R  dest.js\0orig.js\0';
+    const entries = parseStatusZ(z);
+    assert.equal(entries.length, 3);
+    assert.equal(entries[0].path, 'src/app.js');
+    assert.equal(entries[1].path, 'new.txt');
+    assert.equal(entries[1].status, 'Untracked');
+    assert.equal(entries[2].path, 'dest.js');
+    assert.equal(entries[2].origPath, 'orig.js');
+    assert.equal(entries[2].status, 'Renamed');
+});
+
+test('parseStatusZ handles empty input', () => {
+    assert.deepEqual(parseStatusZ(''), []);
+    assert.deepEqual(parseStatusZ(null), []);
+});
+
+test('sanitizeAiMessage never splits a surrogate pair at the boundary', () => {
+    const message = 'feat: add ' + 'x'.repeat(58) + '😀 more';
+    const result = sanitizeAiMessage(message, 72);
+    assert.ok(result.length <= 72);
+    assert.ok(result.isWellFormed(), 'result must not contain a lone surrogate');
+    assert.match(result, /\.\.\.$/);
+});
+
+test('generateFallbackFromEntries matches string-based fallback', () => {
+    const entries = parseGitStatus(' M a.js\nA  b.js\n?? c.js');
+    assert.equal(generateFallbackFromEntries(entries), 'chore: add 2, update 1 files');
+    assert.equal(generateFallbackFromEntries([]), 'chore: update files');
+});

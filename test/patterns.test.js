@@ -80,3 +80,39 @@ test('isExcluded handles empty inputs', () => {
     assert.equal(isExcluded('', compilePatterns(['*.log'])), false);
     assert.equal(isExcluded('file.txt', []), false);
 });
+
+// --- regression tests for v1.3.0 fixes --------------------------------------
+
+test('leading-slash (root-anchored) patterns now match', () => {
+    assert.equal(excluded('dist/app.js', ['/dist']), true);
+    assert.equal(excluded('dist/app.js', ['/dist/**']), true);
+    assert.equal(excluded('src/dist/app.js', ['/dist']), false);
+    assert.equal(excluded('build/x', ['/build']), true);
+});
+
+test('trailing-slash directory patterns match at any depth (not anchored)', () => {
+    assert.equal(excluded('build/x.js', ['build/']), true);
+    assert.equal(excluded('sub/build/x.js', ['build/']), true);
+    assert.equal(excluded('sub/dist/pkg/y.js', ['dist/']), true);
+});
+
+test('backslash separators anchor like forward slashes', () => {
+    // A separator in the pattern anchors it; must not match mid-path.
+    assert.equal(excluded('dir/sub/f.txt', ['dir\\sub']), true);
+    assert.equal(excluded('x/dir/sub/f.txt', ['dir\\sub']), false);
+});
+
+test('repeated globstar patterns do not cause catastrophic backtracking', () => {
+    const pattern = '**/'.repeat(20) + 'zzz';
+    const compiled = compilePatterns([pattern]);
+    const longPath = Array.from({ length: 25 }, (_, i) => `seg${i}`).join('/') + '/nomatch.js';
+    const start = process.hrtime.bigint();
+    const result = isExcluded(longPath, compiled);
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    assert.equal(result, false);
+    assert.ok(elapsedMs < 100, `matching should be fast, took ${elapsedMs}ms`);
+});
+
+test('collapsed globstar still matches across directories', () => {
+    assert.equal(excluded('a/b/c/d.tmp', ['**/'.repeat(5) + '*.tmp']), true);
+});

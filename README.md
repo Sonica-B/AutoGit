@@ -4,6 +4,7 @@ A VS Code extension that automatically stages, commits, and pushes your changes 
 
 ## ✨ Features
 
+- **🔐 Built-in Secret Scanning**: Every commit's staged diff is scanned for API keys, tokens, private keys, and hardcoded passwords *before* it happens — on by default, zero configuration ([why this matters](https://github.com/Sonica-B/AutoGit/blob/main/docs/gap-analysis-2026.md))
 - **🤖 AI-Powered Commit Messages**: Uses GitHub Copilot to generate meaningful, contextual commit messages from your file list *and* a diff summary
 - **🔄 Automatic Git Operations**: Automatically stages, commits, and (optionally) pushes changes when files change
 - **🎯 Smart File Filtering**: Gitignore-style exclude patterns that work correctly on Windows, macOS, and Linux
@@ -35,7 +36,7 @@ cd AutoGit
 npm install
 npm test
 npx @vscode/vsce package
-code --install-extension auto-git-copilot-1.1.0.vsix
+code --install-extension auto-git-copilot-*.vsix
 ```
 
 ## 📖 Usage
@@ -73,6 +74,8 @@ Search for "Auto Git" in VS Code settings:
 | `autoGitCopilot.autoPush` | boolean | `true` | Push after each commit; disable to commit locally only |
 | `autoGitCopilot.includeUntracked` | boolean | `true` | Include untracked files in commits |
 | `autoGitCopilot.useAI` | boolean | `true` | Use Copilot for commit messages (falls back automatically if unavailable) |
+| `autoGitCopilot.scanForSecrets` | boolean | `true` | Block commits whose staged diff contains credential patterns |
+| `autoGitCopilot.secretScanIgnorePatterns` | array | `[]` | Regexes matched against a finding's text or `file:line` to suppress it |
 | `autoGitCopilot.maxCommitMessageLength` | number | `72` | Maximum commit message length (20–200) |
 | `autoGitCopilot.protectedBranches` | array | `[]` | Branches on which auto-commit is skipped, e.g. `["main"]` |
 | `autoGitCopilot.notificationLevel` | string | `"errors"` | Popup noise: `"all"`, `"errors"`, or `"none"` |
@@ -84,7 +87,7 @@ Patterns follow gitignore-style semantics:
 
 - `*` matches within one path segment (`*.log` → `error.log`, `logs/error.log`)
 - `**` matches across segments (`dist/**` → everything under `dist/`)
-- Patterns containing `/` are anchored to the workspace root; bare patterns match at any depth
+- A pattern with an interior `/` (or a leading `/`) is anchored to the workspace root; a bare name — including a trailing-slash directory like `build/` — matches at any depth
 - Windows backslash paths are handled automatically
 
 Default excludes: `node_modules/**`, `.git/**`, `*.log`, `.env*`, `dist/**`, `build/**`, `out/**`, `*.tmp`, `*.temp`, `.DS_Store`, `Thumbs.db`, `*.vsix`, `.vscode-test/**`, `coverage/**`, `*.lock`, `package-lock.json`
@@ -100,6 +103,32 @@ Default excludes: `node_modules/**`, `.git/**`, `*.log`, `.env*`, `dist/**`, `bu
   "autoGitCopilot.notificationLevel": "all"
 }
 ```
+
+## 🔐 Secret Scanning
+
+Auto-commit removes the human review step between saving a file and pushing it — which is exactly when secrets leak. In 2025, 28.65 million hardcoded secrets hit public GitHub (+34% YoY), and AI-assisted commits leak at roughly **twice** the baseline rate ([GitGuardian, State of Secrets Sprawl 2026](https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/)).
+
+AutoGit therefore scans every staged diff **before** committing:
+
+- **What it detects**: AWS/GitHub/GitLab/Google/Slack/Stripe/npm/SendGrid/OpenAI/Anthropic keys and tokens, JWTs, private-key blocks, connection strings with embedded passwords, and entropy-checked generic assignments (`password = "..."`, `api_key = "..."`)
+- **What happens on a hit**: the commit is blocked, findings are logged with *redacted* previews (the secret is never echoed), and a warning notification appears — regardless of your `notificationLevel`
+- **Fails closed**: if the staged change is too large to scan safely, the commit is also blocked (not silently allowed) until you confirm
+- **Escape hatches**:
+  - Click **Commit Anyway** on the notification. The override is bound to the *exact* content you reviewed (by fingerprint) — if the staged change is different next time, it is scanned again, so a stale click can never leak a new secret.
+  - Add a regex to `autoGitCopilot.secretScanIgnorePatterns` (matched against the finding text or its `file:line`; suppressions are logged, and unsafe/ReDoS-prone patterns are rejected)
+  - Append `autogit:allow-secret` in a comment on the flagged line (e.g. for documentation examples)
+- **Detects unquoted secrets too**: `.env`, INI, and YAML assignments (`DB_PASSWORD=…`, `aws_secret_access_key = …`) are caught, not just quoted code literals
+- **Limits**: findings are capped at 50 per run; placeholder values (`${VAR}`, `<your-key>`, `changeme`, `process.env...`) are filtered to avoid false positives
+
+Scanning only inspects lines *added* by the pending commit, so pre-existing history is untouched. Detection is pattern + entropy heuristics — it reduces risk substantially but is not a guarantee; keep secrets in environment variables or a secret manager.
+
+### Exclusions are enforced at commit time
+
+Files matching `excludePatterns` are never staged, even when an included file triggers the run — the extension stages an explicit, filtered path list rather than a blanket `git add .`. So a `.env`, `dist/` bundle, or `*.log` that isn't in `.gitignore` still won't be auto-committed.
+
+### Safe around in-progress git operations
+
+Auto-commit is skipped (with a notification) while a merge, rebase, cherry-pick, or revert is in progress, and when `HEAD` is detached — so conflict markers and orphan commits are never auto-committed or pushed. Operations are scoped to your workspace folder, so a workspace that is a subdirectory of a larger repo never sweeps in unrelated changes.
 
 ## 🤖 AI Commit Messages
 
@@ -137,7 +166,7 @@ AI requests time out after 20 seconds, so a slow model never blocks your commit.
 - Requires VS Code 1.90+
 
 **Push failures:**
-- The extension pushes with `-u origin <branch>` when no upstream exists; make sure a remote named `origin` is configured
+- On the first push of a branch the extension sets the upstream automatically, using `remote.pushDefault`, or the sole remote, preferring one named `origin`
 - Check credentials (`git push` from a terminal should succeed)
 - Set `"autoGitCopilot.autoPush": false` to commit locally only
 
@@ -170,7 +199,7 @@ Apache-2.0 — see [LICENSE](LICENSE).
 
 ## 📝 Changelog
 
-See [CHANGELOG.md](CHANGELOG.md) for the full version history.
+See [CHANGELOG.md](https://github.com/Sonica-B/AutoGit/blob/main/CHANGELOG.md) for the full version history.
 
 ---
 
