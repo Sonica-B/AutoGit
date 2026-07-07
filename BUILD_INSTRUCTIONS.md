@@ -1,152 +1,73 @@
-# Build Instructions for Auto Git with Copilot Extension
+# Build Instructions — AutoGit-AI
 
-## Quick Build and Install
+## Prerequisites
 
-### Prerequisites
+- [Node.js](https://nodejs.org/) 20 or newer
+- Git
+- VS Code 1.90+
+
+No global installs are required — the packager runs through `npx`.
+
+## Project Layout
+
+```
+AutoGit/
+├── extension.js          # VS Code wiring (activation, commands, status bar)
+├── lib/
+│   ├── patterns.js       # exclude-pattern glob matching (pure)
+│   ├── commitMessage.js  # status parsing, AI prompt, fallback messages (pure)
+│   └── gitService.js     # git commands via execFile (no shell)
+├── test/                 # node:test unit tests for lib/
+├── package.json          # extension manifest
+├── eslint.config.js      # lint configuration
+└── .github/workflows/ci.yml  # lint + test + package on every push
+```
+
+## Build and Install
+
 ```bash
-# Install Node.js (if not already installed)
-# Download from: https://nodejs.org/
-
-# Install VS Code Extension Manager globally
-npm install -g vsce
-```
-
-### Build Steps
-
-1. **Download/Copy all the files** from the artifacts into your project directory
-
-2. **Set up the project structure:**
-```
-auto-git-copilot-extension/
-├── extension.js
-├── package.json
-├── README.md
-├── tsconfig.json
-├── .vscodeignore
-├── .gitignore
-├── LICENSE
-└── BUILD_INSTRUCTIONS.md
-```
-
-3. **Open terminal in the project directory:**
-```bash
-cd "D:\WPI Assignments\AutoGit_Extension\auto-git-copilot-extension"
-```
-
-4. **Install dependencies:**
-```bash
+# 1. Install dev dependencies
 npm install
-```
 
-5. **Package the extension:**
-```bash
-vsce package
-```
+# 2. Lint and test
+npm run lint
+npm test
 
-6. **Install in VS Code:**
-```bash
-# Uninstall any existing version
+# 3. Package the extension
+npx @vscode/vsce package
+
+# 4. Install in VS Code
 code --uninstall-extension ShreyaBoyane.auto-git-copilot
-
-# Install the new version
-code --install-extension auto-git-copilot-1.0.2.vsix
+code --install-extension auto-git-copilot-1.1.0.vsix
 ```
 
-## Verification Steps
-
-1. **Restart VS Code completely**
-
-2. **Open a Git repository**
-
-3. **Check for "Auto Git: OFF" in the status bar**
-
-4. **Open Developer Console** (Help → Toggle Developer Tools → Console)
-   - Look for: "Auto Git with Copilot extension is activating..."
-   - Should see: "Auto Git extension activation completed successfully"
-
-5. **Test the extension:**
-   - Click status bar to toggle: "Auto Git: OFF" → "Auto Git: ON"
-   - Save a file and watch for "Pending..." → "Working..." → "ON"
-   - Check git log: `git log --oneline -5`
-
-## Troubleshooting Build Issues
-
-### Common Problems:
-
-**Missing vsce:**
-```bash
-npm install -g vsce
-```
-
-**Permission errors on Windows:**
-```bash
-# Run PowerShell as Administrator, then:
-npm install -g vsce
-```
-
-**Package.json errors:**
-- Ensure all commas are correct
-- Verify JSON syntax with a validator
-
-**Version conflicts:**
-```bash
-npm cache clean --force
-rm -rf node_modules package-lock.json
-npm install
-```
-
-## Publishing to Marketplace (Optional)
-
-If you want to publish to VS Code Marketplace:
-
-1. **Create publisher account:** https://marketplace.visualstudio.com/manage
-
-2. **Get Personal Access Token from Azure DevOps**
-
-3. **Login and publish:**
-```bash
-vsce login your-publisher-name
-vsce publish
-```
+Alternatively run `rebuild.bat` on Windows to do steps 3–4 in one go.
 
 ## Development Mode
 
-For testing during development:
+1. Open this folder in VS Code
+2. Press `F5` to launch an Extension Development Host
+3. Open any git repository in the new window and test
 
-1. **Open project in VS Code**
-2. **Press F5** to open Extension Development Host
-3. **Test in the new VS Code window**
+## Verification Checklist
 
-## File Descriptions
+1. Restart VS Code after installing
+2. Open a git repository — the status bar shows **Auto Git: OFF**
+3. Run **Auto Git: Show Logs** — you should see "Auto Git extension activated."
+4. Toggle it on, save a file, and watch: `Pending (1)` → `Working...` → `ON`
+5. Check `git log --oneline -3` for the new commit
 
-- **`extension.js`** - Main extension logic with all features
-- **`package.json`** - Extension manifest and configuration
-- **`README.md`** - Complete user documentation
-- **`tsconfig.json`** - TypeScript configuration for development
-- **`.vscodeignore`** - Files to exclude from extension package
-- **`.gitignore`** - Git ignore patterns
-- **`LICENSE`** - MIT license
+## Publishing to the Marketplace (optional)
 
-## Features Included
+1. Create a publisher account: https://marketplace.visualstudio.com/manage
+2. Get a Personal Access Token from Azure DevOps
+3. ```bash
+   npx @vscode/vsce login <publisher-name>
+   npx @vscode/vsce publish
+   ```
 
-✅ **AI-Powered Commit Messages** - Uses GitHub Copilot for intelligent commits  
-✅ **Auto Stage/Commit/Push** - Automatic git operations on file save  
-✅ **Smart File Filtering** - Configurable exclude patterns  
-✅ **Status Bar Integration** - Visual feedback and control  
-✅ **Configurable Settings** - All aspects customizable  
-✅ **Manual Override** - Toggle and immediate commit commands  
-✅ **Error Handling** - Robust error handling and recovery  
-✅ **Logging** - Comprehensive logging for debugging  
+## Troubleshooting
 
-## Support
-
-If you encounter any issues:
-
-1. Check the VS Code Developer Console for error messages
-2. Verify you're in a valid Git repository
-3. Ensure GitHub Copilot is installed and active
-4. Test basic git operations manually: `git status`, `git push`
-
----
-
-**Happy coding with automated git commits! 🚀**
+- **`vsce` not found** — use `npx @vscode/vsce`, the old standalone `vsce` package is deprecated
+- **Packaging warnings about missing repository** — ensure `repository.url` in `package.json` is reachable
+- **Dependency issues** — `npm cache clean --force`, delete `node_modules` and `package-lock.json`, re-run `npm install`

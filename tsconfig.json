@@ -1,28 +1,27 @@
 {
   "compilerOptions": {
     "module": "commonjs",
-    "target": "es2020",
+    "target": "es2022",
     "outDir": "out",
-    "lib": ["es2020"],
-    "sourceMap": true,
+    "lib": ["es2022"],
+    "sourceMap": false,
     "rootDir": ".",
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "allowJs": true,
-    "checkJs": false,
-    "declaration": false,
-    "declarationMap": false
+    "checkJs": true,
+    "noEmit": true,
+    "types": ["node", "vscode"]
   },
   "include": [
-    "*.js",
-    "*.ts"
+    "extension.js",
+    "lib/**/*.js"
   ],
   "exclude": [
     "node_modules",
     ".vscode-test",
-    "out",
-    "**/*.vsix"
+    "out"
   ]
 }
