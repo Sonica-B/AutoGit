@@ -1,534 +1,755 @@
 const vscode = require('vscode');
-const { exec } = require('child_process');
 const path = require('path');
-const { promisify } = require('util');
+const crypto = require('crypto');
 
-const execAsync = promisify(exec);
+const { compilePatterns, isExcluded } = require('./lib/patterns');
+const {
+    parseStatusZ,
+    generateFallbackFromEntries,
+    buildCommitPrompt,
+    sanitizeAiMessage
+} = require('./lib/commitMessage');
+const { GitService } = require('./lib/gitService');
+const { scanDiff, compileIgnorePatterns } = require('./lib/secretScanner');
+
+const CONFIG_SECTION = 'autoGitCopilot';
+const AI_REQUEST_TIMEOUT_MS = 20_000;
+/** Above this many changed lines, skip fetching the full diff to scan. */
+const SECRET_SCAN_MAX_LINES = 50_000;
+
+/** @type {vscode.OutputChannel | undefined} */
+let outputChannel;
+/** @type {vscode.StatusBarItem | undefined} */
+let statusBarItem;
+/** @type {NodeJS.Timeout | undefined} */
+let pendingTimeout;
+/** @type {GitService | undefined} */
+let git;
 
 let isEnabled = false;
-let statusBarItem;
-let pendingTimeout;
-let workspacePath;
-let fileSystemWatcher;
-let changeTracker = new Set();
-let lastCheckTime = 0;
+let workspacePath = '';
+/** Workspace folder relative to the repo root ('' when at the root). */
+let scopePrefix = '';
+const changeTracker = new Set();
+/** @type {RegExp[]} */
+let compiledExcludes = [];
+
+// Guards against overlapping git pipelines (e.g. manual commit while a
+// scheduled one is running). If changes arrive mid-run, we run once more.
+let isRunning = false;
+let rerunRequested = false;
+
+// Fingerprint (hash of the staged diff) the user approved via "Commit Anyway".
+// The scan is skipped only for the exact content that was reviewed; any other
+// staged content still gets scanned, so a stale approval can never leak a new
+// secret. Cleared on consumption and when the extension is disabled.
+/** @type {string | null} */
+let approvedFingerprint = null;
+
+/** @param {string} message */
+function log(message) {
+    if (outputChannel) {
+        const timestamp = new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
+        outputChannel.appendLine(`[${timestamp}] ${message}`);
+    }
+}
+
+/**
+ * Extract a readable message from an unknown thrown value.
+ * @param {unknown} error
+ * @returns {string}
+ */
+function errorText(error) {
+    if (error instanceof Error) return error.message;
+    return String(error);
+}
+
+function getConfig() {
+    return vscode.workspace.getConfiguration(CONFIG_SECTION);
+}
+
+/**
+ * Show a user notification respecting the configured notification level.
+ * @param {'info' | 'error' | 'warn'} kind
+ * @param {string} message
+ */
+function notify(kind, message) {
+    const level = /** @type {string} */ (getConfig().get('notificationLevel', 'errors'));
+    if (level === 'none') return;
+    if (level === 'errors' && kind === 'info') return;
+
+    if (kind === 'error') {
+        vscode.window.showErrorMessage(message);
+    } else if (kind === 'warn') {
+        vscode.window.showWarningMessage(message);
+    } else {
+        vscode.window.showInformationMessage(message);
+    }
+}
+
+function refreshCompiledExcludes() {
+    const patterns = /** @type {string[]} */ (getConfig().get('excludePatterns', []));
+    compiledExcludes = compilePatterns(patterns, (msg) => log(`WARN: ${msg}`));
+}
 
 /**
  * @param {vscode.ExtensionContext} context
  */
-function activate(context) {
-    console.log('Auto Git with Copilot extension is activating...');
-    
-    try {
-        // Get workspace
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        if (!workspaceFolders || workspaceFolders.length === 0) {
-            console.log('Auto Git: No workspace folder found');
-            vscode.window.showWarningMessage('Auto Git: No workspace folder found');
-            return;
-        }
+async function activate(context) {
+    outputChannel = vscode.window.createOutputChannel('Auto Git');
+    context.subscriptions.push(outputChannel);
+    log('Auto Git extension activating...');
 
-        workspacePath = workspaceFolders[0].uri.fsPath;
-        console.log('Auto Git: Workspace initialized:', workspacePath);
-
-        // Create status bar item
-        statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
-        statusBarItem.command = 'autoGitCopilot.toggle';
-        updateStatusBar();
-        statusBarItem.show();
-        context.subscriptions.push(statusBarItem);
-        console.log('Auto Git: Status bar item created');
-
-        // Get initial configuration
-        const config = vscode.workspace.getConfiguration('autoGitCopilot');
-        isEnabled = config.get('enabled', false);
-        console.log('Auto Git: Initial enabled state:', isEnabled);
-
-        // Register commands
-        const toggleCommand = vscode.commands.registerCommand('autoGitCopilot.toggle', () => {
-            try {
-                isEnabled = !isEnabled;
-                const config = vscode.workspace.getConfiguration('autoGitCopilot');
-                config.update('enabled', isEnabled, vscode.ConfigurationTarget.Workspace);
-                updateStatusBar();
-                
-                // Start or stop file monitoring based on enabled state
-                if (isEnabled) {
-                    startFileMonitoring();
-                } else {
-                    stopFileMonitoring();
-                }
-                
-                vscode.window.showInformationMessage(`Auto Git ${isEnabled ? 'enabled' : 'disabled'}`);
-                console.log(`Auto Git toggled: ${isEnabled ? 'enabled' : 'disabled'}`);
-            } catch (error) {
-                console.error('Error in toggle command:', error);
-                vscode.window.showErrorMessage(`Auto Git toggle failed: ${error.message}`);
-            }
-        });
-
-        const commitNowCommand = vscode.commands.registerCommand('autoGitCopilot.commitNow', () => {
-            try {
-                if (pendingTimeout) {
-                    clearTimeout(pendingTimeout);
-                    pendingTimeout = null;
-                }
-                vscode.window.showInformationMessage('Auto Git: Manual commit triggered');
-                performGitOperations();
-                console.log('Auto Git: Manual commit triggered');
-            } catch (error) {
-                console.error('Error in commit now command:', error);
-                vscode.window.showErrorMessage(`Auto Git commit failed: ${error.message}`);
-            }
-        });
-
-        // Add test command for debugging
-        const testCommand = vscode.commands.registerCommand('autoGitCopilot.test', () => {
-            try {
-                vscode.window.showInformationMessage('Auto Git: Test command executed!');
-                console.log('Auto Git: Test command executed successfully');
-                console.log('Auto Git: Current enabled state:', isEnabled);
-                console.log('Auto Git: Workspace path:', workspacePath);
-                console.log('Auto Git: File system watcher active:', !!fileSystemWatcher);
-                console.log('Auto Git: Changes tracked:', changeTracker.size);
-            } catch (error) {
-                console.error('Error in test command:', error);
-            }
-        });
-
-        context.subscriptions.push(toggleCommand, commitNowCommand, testCommand);
-        console.log('Auto Git: Commands registered successfully');
-
-        // ALTERNATIVE APPROACH: Use multiple file change detection methods
-        setupFileChangeDetection(context);
-
-        // Register configuration change listener
-        try {
-            const configListener = vscode.workspace.onDidChangeConfiguration((e) => {
-                if (e.affectsConfiguration('autoGitCopilot.enabled')) {
-                    const config = vscode.workspace.getConfiguration('autoGitCopilot');
-                    const newEnabled = config.get('enabled', false);
-                    if (newEnabled !== isEnabled) {
-                        isEnabled = newEnabled;
-                        updateStatusBar();
-                        
-                        if (isEnabled) {
-                            startFileMonitoring();
-                        } else {
-                            stopFileMonitoring();
-                        }
-                        
-                        console.log(`Auto Git: Configuration changed, enabled: ${isEnabled}`);
-                    }
-                }
-            });
-            context.subscriptions.push(configListener);
-            console.log('Auto Git: Configuration listener registered');
-        } catch (configError) {
-            console.error('Auto Git: Failed to register config listener:', configError);
-        }
-
-        console.log('Auto Git extension activation completed successfully');
-        vscode.window.showInformationMessage('Auto Git with Copilot loaded successfully!');
-        
-    } catch (error) {
-        console.error('Auto Git extension activation failed:', error);
-        vscode.window.showErrorMessage(`Auto Git extension failed to load: ${error.message}`);
-    }
-}
-
-function setupFileChangeDetection(context) {
-    console.log('Auto Git: Setting up alternative file change detection...');
-    
-    // Method 1: File System Watcher (watches for any file changes in workspace)
-    try {
-        // Watch all files except those in exclude patterns
-        const pattern = new vscode.RelativePattern(workspacePath, '**/*');
-        fileSystemWatcher = vscode.workspace.createFileSystemWatcher(pattern);
-        
-        // Handle file changes
-        fileSystemWatcher.onDidChange((uri) => {
-            handleFileChange(uri, 'changed');
-        });
-        
-        // Handle file creation
-        fileSystemWatcher.onDidCreate((uri) => {
-            handleFileChange(uri, 'created');
-        });
-        
-        // Handle file deletion
-        fileSystemWatcher.onDidDelete((uri) => {
-            handleFileChange(uri, 'deleted');
-        });
-        
-        context.subscriptions.push(fileSystemWatcher);
-        console.log('Auto Git: File system watcher created successfully');
-    } catch (fsWatcherError) {
-        console.error('Auto Git: Failed to create file system watcher:', fsWatcherError);
-    }
-    
-    // Method 2: Text Document Change Detection (detects when files are modified)
-    try {
-        const textChangeListener = vscode.workspace.onDidChangeTextDocument((event) => {
-            if (event.document.uri.scheme === 'file') {
-                handleFileChange(event.document.uri, 'text-changed');
-            }
-        });
-        
-        context.subscriptions.push(textChangeListener);
-        console.log('Auto Git: Text change listener created successfully');
-    } catch (textChangeError) {
-        console.error('Auto Git: Failed to create text change listener:', textChangeError);
-    }
-    
-    // Method 3: Periodic Git Status Check (fallback)
-    const periodicCheck = setInterval(() => {
-        if (isEnabled && changeTracker.size > 0) {
-            const now = Date.now();
-            // Check if enough time has passed since last activity
-            if (now - lastCheckTime > 5000) { // 5 seconds of inactivity
-                console.log('Auto Git: Periodic check triggered git operations');
-                scheduleGitOperations();
-                changeTracker.clear();
-            }
-        }
-    }, 10000); // Check every 10 seconds
-    
-    // Clean up interval on deactivation
-    context.subscriptions.push({
-        dispose: () => clearInterval(periodicCheck)
-    });
-    
-    console.log('Auto Git: Alternative file change detection setup complete');
-}
-
-function handleFileChange(uri, changeType) {
-    if (!isEnabled) return;
-    
-    // Check if file should be excluded
-    const config = vscode.workspace.getConfiguration('autoGitCopilot');
-    const excludePatterns = config.get('excludePatterns', []);
-    const relativePath = path.relative(workspacePath, uri.fsPath);
-    
-    const shouldExclude = excludePatterns.some(pattern => {
-        try {
-            const regex = new RegExp(pattern.replace(/\*\*/g, '.*').replace(/\*/g, '[^/]*'));
-            return regex.test(relativePath);
-        } catch (regexError) {
-            console.warn(`Auto Git: Invalid pattern ${pattern}:`, regexError);
-            return false;
-        }
-    });
-
-    if (shouldExclude) {
-        console.log(`Auto Git: Excluding file ${relativePath} (${changeType})`);
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+        log('No workspace folder found; extension idle.');
+        registerCommands(context, { workspaceAvailable: false });
         return;
     }
 
-    console.log(`Auto Git: File ${changeType}: ${relativePath}`);
-    
-    // Track the change
+    workspacePath = workspaceFolders[0].uri.fsPath;
+    if (workspaceFolders.length > 1) {
+        log(`Multi-root workspace detected; using first folder: ${workspacePath}`);
+    }
+
+    // Resolve the repository root so all git commands run from a consistent
+    // location, and compute the workspace's path within the repo so operations
+    // stay scoped to it (a workspace that is a subdirectory of a larger repo
+    // must not sweep in unrelated changes).
+    git = await createGitService(workspacePath);
+    log(`Workspace initialized: ${workspacePath} (repo scope: ${scopePrefix || '.'})`);
+
+    statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
+    statusBarItem.command = 'autoGitCopilot.toggle';
+    statusBarItem.show();
+    context.subscriptions.push(statusBarItem);
+
+    isEnabled = getConfig().get('enabled', false);
+    refreshCompiledExcludes();
+    updateStatusBar();
+
+    registerCommands(context, { workspaceAvailable: true });
+    setupFileChangeDetection(context);
+
+    context.subscriptions.push(
+        vscode.workspace.onDidChangeConfiguration((e) => {
+            if (e.affectsConfiguration(`${CONFIG_SECTION}.excludePatterns`)) {
+                refreshCompiledExcludes();
+                log('Exclude patterns reloaded.');
+            }
+            if (e.affectsConfiguration(`${CONFIG_SECTION}.enabled`)) {
+                const newEnabled = getConfig().get('enabled', false);
+                if (newEnabled !== isEnabled) {
+                    setEnabled(newEnabled, { persist: false });
+                }
+            }
+        })
+    );
+
+    log('Auto Git extension activated.');
+}
+
+/**
+ * Build a GitService rooted at the repository containing `folder`, scoped to
+ * that folder. Falls back to the folder itself if the repo root cannot be
+ * resolved (e.g. not a repo yet, or git missing) — the pipeline then surfaces
+ * the specific error on first run.
+ * @param {string} folder
+ * @returns {Promise<GitService>}
+ */
+async function createGitService(folder) {
+    const probe = new GitService(folder, (msg) => log(msg));
+    try {
+        const root = await probe.repositoryRoot();
+        const rel = path.relative(root, folder).replace(/\\/g, '/');
+        scopePrefix = rel && rel !== '.' && !rel.startsWith('..') ? rel : '';
+        const scope = scopePrefix === '' ? '.' : scopePrefix;
+        return new GitService(root, (msg) => log(msg), scope);
+    } catch (err) {
+        scopePrefix = '';
+        log(`Could not resolve repository root (${errorText(err)}); operating on the workspace folder.`);
+        return probe;
+    }
+}
+
+/**
+ * Convert a repo-root-relative path to one relative to the workspace folder,
+ * so exclude patterns are matched with the same base as the file watcher.
+ * @param {string} repoRelativePath
+ * @returns {string}
+ */
+function toWorkspaceRelative(repoRelativePath) {
+    if (scopePrefix && repoRelativePath.startsWith(`${scopePrefix}/`)) {
+        return repoRelativePath.slice(scopePrefix.length + 1);
+    }
+    return repoRelativePath;
+}
+
+/**
+ * @param {vscode.ExtensionContext} context
+ * @param {{ workspaceAvailable: boolean }} options
+ */
+function registerCommands(context, { workspaceAvailable }) {
+    const requireWorkspace = (/** @type {() => void} */ fn) => () => {
+        if (!workspaceAvailable) {
+            vscode.window.showWarningMessage('Auto Git: Open a folder to use this command.');
+            return;
+        }
+        fn();
+    };
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand(
+            'autoGitCopilot.toggle',
+            requireWorkspace(() => setEnabled(!isEnabled, { persist: true }))
+        ),
+        vscode.commands.registerCommand(
+            'autoGitCopilot.enable',
+            requireWorkspace(() => setEnabled(true, { persist: true }))
+        ),
+        vscode.commands.registerCommand(
+            'autoGitCopilot.disable',
+            requireWorkspace(() => setEnabled(false, { persist: true }))
+        ),
+        vscode.commands.registerCommand(
+            'autoGitCopilot.commitNow',
+            requireWorkspace(() => {
+                clearPendingTimeout();
+                log('Manual commit triggered.');
+                performGitOperations();
+            })
+        ),
+        vscode.commands.registerCommand('autoGitCopilot.showLogs', () => {
+            if (outputChannel) outputChannel.show(true);
+        })
+    );
+}
+
+/**
+ * @param {boolean} enabled
+ * @param {{ persist: boolean }} options persist writes the value back to settings
+ */
+function setEnabled(enabled, { persist }) {
+    isEnabled = enabled;
+    if (persist) {
+        getConfig()
+            .update('enabled', enabled, vscode.ConfigurationTarget.Workspace)
+            .then(undefined, (err) => log(`WARN: Failed to persist enabled setting: ${err}`));
+    }
+    if (!enabled) {
+        clearPendingTimeout();
+        changeTracker.clear();
+        approvedFingerprint = null;
+    }
+    updateStatusBar();
+    notify('info', `Auto Git ${enabled ? 'enabled' : 'disabled'}`);
+    log(`Auto Git ${enabled ? 'enabled' : 'disabled'}.`);
+}
+
+/**
+ * @param {vscode.ExtensionContext} context
+ */
+function setupFileChangeDetection(context) {
+    const pattern = new vscode.RelativePattern(workspacePath, '**/*');
+    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+    watcher.onDidChange((uri) => handleFileChange(uri, 'changed'));
+    watcher.onDidCreate((uri) => handleFileChange(uri, 'created'));
+    watcher.onDidDelete((uri) => handleFileChange(uri, 'deleted'));
+    context.subscriptions.push(watcher);
+    log('File system watcher registered.');
+}
+
+/**
+ * @param {vscode.Uri} uri
+ * @param {string} changeType
+ */
+function handleFileChange(uri, changeType) {
+    if (!isEnabled || uri.scheme !== 'file') return;
+
+    const relativePath = path.relative(workspacePath, uri.fsPath);
+    // Ignore paths outside the workspace folder.
+    if (!relativePath || relativePath.startsWith('..')) return;
+
+    if (isExcluded(relativePath, compiledExcludes)) {
+        return;
+    }
+
+    log(`File ${changeType}: ${relativePath}`);
     changeTracker.add(relativePath);
-    lastCheckTime = Date.now();
-    
-    // Schedule git operations
     scheduleGitOperations();
 }
 
 function scheduleGitOperations() {
-    // Debounce git operations
-    if (pendingTimeout) {
-        clearTimeout(pendingTimeout);
+    clearPendingTimeout();
+
+    const delay = getConfig().get('delayMs', 3000);
+    if (statusBarItem) {
+        statusBarItem.text = `$(sync~spin) Auto Git: Pending (${changeTracker.size})`;
+        statusBarItem.tooltip = `Auto Git will commit in ${Math.round(delay / 1000)}s. Click to disable.`;
     }
 
-    const config = vscode.workspace.getConfiguration('autoGitCopilot');
-    const delay = config.get('delayMs', 3000);
-    
-    if (statusBarItem) {
-        statusBarItem.text = `$(sync~spin) Auto Git: Pending...`;
-    }
-    
     pendingTimeout = setTimeout(() => {
+        pendingTimeout = undefined;
         performGitOperations();
-        pendingTimeout = null;
-        changeTracker.clear();
     }, delay);
 }
 
-function startFileMonitoring() {
-    console.log('Auto Git: Starting file monitoring');
-    changeTracker.clear();
-    lastCheckTime = Date.now();
-}
-
-function stopFileMonitoring() {
-    console.log('Auto Git: Stopping file monitoring');
+function clearPendingTimeout() {
     if (pendingTimeout) {
         clearTimeout(pendingTimeout);
-        pendingTimeout = null;
+        pendingTimeout = undefined;
     }
-    changeTracker.clear();
-    updateStatusBar();
 }
 
 function updateStatusBar() {
     if (!statusBarItem) return;
-    
+
     if (isEnabled) {
-        statusBarItem.text = `$(git-branch) Auto Git: ON`;
+        statusBarItem.text = '$(git-branch) Auto Git: ON';
         statusBarItem.tooltip = 'Auto Git is enabled. Click to disable.';
         statusBarItem.backgroundColor = undefined;
     } else {
-        statusBarItem.text = `$(git-branch) Auto Git: OFF`;
+        statusBarItem.text = '$(git-branch) Auto Git: OFF';
         statusBarItem.tooltip = 'Auto Git is disabled. Click to enable.';
         statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     }
 }
 
 async function performGitOperations() {
-    if (!workspacePath) {
-        vscode.window.showErrorMessage('Auto Git: No workspace path');
+    if (!git) {
+        notify('error', 'Auto Git: No workspace available.');
         return;
     }
 
+    if (isRunning) {
+        rerunRequested = true;
+        log('Git pipeline already running; queued a follow-up run.');
+        return;
+    }
+    isRunning = true;
+
+    try {
+        await runGitPipeline(git);
+    } finally {
+        isRunning = false;
+        if (rerunRequested) {
+            rerunRequested = false;
+            log('Running queued follow-up git pipeline.');
+            performGitOperations();
+        }
+    }
+}
+
+/**
+ * @param {GitService} gitSvc
+ */
+async function runGitPipeline(gitSvc) {
+    const config = getConfig();
+
     try {
         if (statusBarItem) {
-            statusBarItem.text = `$(sync~spin) Auto Git: Working...`;
+            statusBarItem.text = '$(sync~spin) Auto Git: Working...';
         }
-        
-        console.log('Auto Git: Starting git operations...');
-        
-        // Check if we're in a git repository
-        try {
-            await execAsync('git rev-parse --git-dir', { cwd: workspacePath });
-            console.log('Auto Git: Confirmed git repository');
-        } catch (error) {
-            console.error('Auto Git: Not a git repository:', error);
-            vscode.window.showErrorMessage('Auto Git: Not a git repository');
+
+        // isRepository throws on a missing git binary (mapped to a clear
+        // message below); it returns false only for a genuine non-repo.
+        if (!(await gitSvc.isRepository())) {
+            log('Not a git repository; skipping.');
+            notify('error', 'Auto Git: This workspace is not a git repository.');
             updateStatusBar();
             return;
         }
 
-        // Get git status
-        const { stdout: statusOutput } = await execAsync('git status --porcelain', { cwd: workspacePath });
-        const hasChanges = statusOutput.trim().length > 0;
-        
-        if (!hasChanges) {
-            console.log('Auto Git: No changes to commit');
+        // Do not auto-commit while a merge/rebase/cherry-pick/revert is in
+        // progress: staging would record conflict markers and complete the
+        // operation with a corrupted tree.
+        const pending = await gitSvc.pendingOperation();
+        if (pending) {
+            log(`A ${pending} is in progress; skipping auto-commit until it is resolved.`);
+            notify('warn', `Auto Git: Skipped — a ${pending} is in progress. Finish it first.`);
             updateStatusBar();
             return;
         }
 
-        console.log('Auto Git: Changes detected, proceeding with commit');
-
-        // Stage files based on configuration
-        const config = vscode.workspace.getConfiguration('autoGitCopilot');
-        const includeUntracked = config.get('includeUntracked', true);
-        
-        if (includeUntracked) {
-            await execAsync('git add .', { cwd: workspacePath });
-            console.log('Auto Git: Staged all files including untracked');
-        } else {
-            // Only stage modified files (not untracked)
-            await execAsync('git add -u', { cwd: workspacePath });
-            console.log('Auto Git: Staged only tracked files');
-        }
-
-        // Generate commit message using Copilot
-        const commitMessage = await generateCommitMessage(statusOutput);
-        console.log(`Auto Git: Generated commit message: "${commitMessage}"`);
-        
-        // Commit changes with proper escaping
-        const escapedMessage = commitMessage.replace(/"/g, '\\"').replace(/'/g, "\\'").replace(/`/g, '\\`');
-        await execAsync(`git commit -m "${escapedMessage}"`, { cwd: workspacePath });
-        console.log('Auto Git: Changes committed successfully');
-        
-        // Push changes
-        await execAsync('git push', { cwd: workspacePath });
-        console.log('Auto Git: Changes pushed successfully');
-        
-        vscode.window.showInformationMessage(`Auto Git: Committed and pushed: "${commitMessage}"`);
-        updateStatusBar();
-        
-    } catch (error) {
-        console.error('Auto Git error:', error);
-        let errorMessage = error.message;
-        
-        // Provide more helpful error messages
-        if (errorMessage.includes('nothing to commit')) {
-            console.log('Auto Git: Nothing to commit (already up to date)');
+        // Never commit onto a detached HEAD (checked-out tag/commit, mid-bisect):
+        // it would create orphan commits and cannot be pushed.
+        if (await gitSvc.isDetachedHead()) {
+            log('HEAD is detached; skipping auto-commit.');
+            notify('warn', 'Auto Git: Skipped — HEAD is detached (not on a branch).');
             updateStatusBar();
             return;
-        } else if (errorMessage.includes('Permission denied') || errorMessage.includes('authentication')) {
-            errorMessage = 'Git authentication failed. Check your SSH keys or credentials.';
-        } else if (errorMessage.includes('remote rejected')) {
-            errorMessage = 'Push rejected by remote. You may need to pull first.';
-        } else if (errorMessage.includes('non-zero exit code')) {
-            errorMessage = 'Git operation failed. Check repository status.';
-        }
-        
-        vscode.window.showErrorMessage(`Auto Git error: ${errorMessage}`);
-        updateStatusBar();
-    }
-}
-
-async function generateCommitMessage(statusOutput) {
-    try {
-        // Parse git status output
-        const lines = statusOutput.trim().split('\n').filter(line => line.trim());
-        const changedFiles = lines.map(line => {
-            const status = line.substring(0, 2);
-            const filename = line.substring(3);
-            return {
-                path: filename,
-                status: getFileStatusFromCode(status)
-            };
-        });
-
-        if (changedFiles.length === 0) {
-            return 'Auto-commit: Update files';
         }
 
-        // Create context for Copilot
-        const context = `Generate a concise commit message for the following changes:
-${changedFiles.map(f => `${f.status}: ${f.path}`).join('\n')}
-
-Guidelines:
-- Be concise and descriptive (under 72 characters)
-- Follow conventional commit format when applicable (feat:, fix:, docs:, refactor:, etc.)
-- Describe WHAT was changed, not HOW
-- Use present tense ("add" not "added")
-
-Examples:
-- "feat: add user authentication system"
-- "fix: resolve login validation bug"
-- "docs: update API documentation"
-- "refactor: simplify error handling logic"
-- "style: improve code formatting"
-- "test: add unit tests for user service"
-
-Generate only the commit message, no quotes or explanation.`;
-
-        console.log('Auto Git: Attempting to generate AI commit message...');
-
-        // Try to use Copilot Chat API
-        try {
-            if (vscode.lm && typeof vscode.lm.selectChatModels === 'function') {
-                const models = await vscode.lm.selectChatModels({
-                    vendor: 'copilot',
-                    family: 'gpt-4'
-                });
-
-                if (models && models.length > 0) {
-                    console.log('Auto Git: Copilot model found, generating message...');
-                    const model = models[0];
-                    const messages = [
-                        vscode.LanguageModelChatMessage.User(context)
-                    ];
-
-                    const response = await model.sendRequest(messages, {}, new vscode.CancellationTokenSource().token);
-                    
-                    let commitMessage = '';
-                    for await (const fragment of response.text) {
-                        commitMessage += fragment;
-                    }
-
-                    // Clean up the response
-                    commitMessage = commitMessage.trim();
-                    
-                    // Remove quotes if present
-                    if ((commitMessage.startsWith('"') && commitMessage.endsWith('"')) ||
-                        (commitMessage.startsWith("'") && commitMessage.endsWith("'"))) {
-                        commitMessage = commitMessage.slice(1, -1);
-                    }
-
-                    // Remove any extra explanations after the commit message
-                    const lines = commitMessage.split('\n');
-                    commitMessage = lines[0].trim();
-
-                    // Remove any remaining quotes or backticks
-                    commitMessage = commitMessage.replace(/["`']/g, '');
-
-                    // Ensure it's not too long
-                    const config = vscode.workspace.getConfiguration('autoGitCopilot');
-                    const maxLength = config.get('maxCommitMessageLength', 72);
-                    if (commitMessage.length > maxLength) {
-                        commitMessage = commitMessage.substring(0, maxLength - 3) + '...';
-                    }
-
-                    if (commitMessage && commitMessage.length > 0) {
-                        console.log('Auto Git: AI commit message generated successfully');
-                        return commitMessage;
-                    }
-                } else {
-                    console.log('Auto Git: No Copilot models available');
-                }
-            } else {
-                console.log('Auto Git: Copilot Language Model API not available');
+        // Never auto-commit on protected branches.
+        const protectedBranches = /** @type {string[]} */ (config.get('protectedBranches', []));
+        if (protectedBranches.length > 0) {
+            const branch = await gitSvc.currentBranch();
+            if (branch && protectedBranches.includes(branch)) {
+                log(`Branch "${branch}" is protected; skipping auto-commit.`);
+                notify('warn', `Auto Git: Skipped commit — branch "${branch}" is protected.`);
+                updateStatusBar();
+                return;
             }
-        } catch (copilotError) {
-            console.warn('Auto Git: Copilot API error:', copilotError.message);
         }
-    } catch (error) {
-        console.warn('Auto Git: Could not generate AI commit message:', error.message);
-    }
 
-    // Fallback to simple commit message
-    console.log('Auto Git: Using fallback commit message');
-    return generateFallbackCommitMessage(statusOutput);
+        // Decide exactly which paths to stage: scoped to the workspace,
+        // honoring includeUntracked, and filtered through excludePatterns so
+        // excluded files (.env, dist, logs) are never committed even when an
+        // included file triggers the run.
+        const stageEntries = await selectPathsToStage(gitSvc, config);
+        if (stageEntries.length === 0) {
+            log('No eligible (non-excluded) changes to stage.');
+            updateStatusBar();
+            return;
+        }
+
+        const paths = [];
+        for (const entry of stageEntries) {
+            paths.push(entry.path);
+            if (entry.origPath) paths.push(entry.origPath);
+        }
+        await gitSvc.stagePaths(paths);
+
+        if (!(await gitSvc.hasStagedChanges())) {
+            log('Nothing staged after applying filters; skipping commit.');
+            updateStatusBar();
+            return;
+        }
+
+        if (!(await guardAgainstSecrets(gitSvc))) {
+            log('Commit blocked by secret scan.');
+            updateStatusBar();
+            return;
+        }
+
+        const commitMessage = await generateCommitMessage(stageEntries, gitSvc);
+        log(`Commit message: "${commitMessage}"`);
+        await gitSvc.commit(commitMessage);
+        log('Changes committed.');
+
+        changeTracker.clear();
+
+        if (config.get('autoPush', true)) {
+            await gitSvc.push();
+            log('Changes pushed.');
+            notify('info', `Auto Git: Committed and pushed — "${commitMessage}"`);
+        } else {
+            notify('info', `Auto Git: Committed — "${commitMessage}"`);
+        }
+
+        updateStatusBar();
+    } catch (error) {
+        const message = friendlyErrorMessage(error);
+        log(`ERROR: ${errorText(error)}`);
+        if (message) {
+            notify('error', `Auto Git: ${message}`);
+        }
+        updateStatusBar();
+    }
 }
 
-function generateFallbackCommitMessage(statusOutput) {
-    const lines = statusOutput.trim().split('\n').filter(line => line.trim());
-    
-    let added = 0, modified = 0, deleted = 0;
-    
-    lines.forEach(line => {
-        const status = line.substring(0, 2);
-        if (status.includes('A') || status.includes('?')) added++;
-        else if (status.includes('M')) modified++;
-        else if (status.includes('D')) deleted++;
+/**
+ * Determine which changed paths should be staged: scoped to the workspace,
+ * respecting includeUntracked, and excluding anything matching the configured
+ * exclude patterns (matched against workspace-relative paths, as the watcher
+ * does).
+ * @param {GitService} gitSvc
+ * @param {vscode.WorkspaceConfiguration} config
+ * @returns {Promise<{ path: string, origPath?: string, code: string, status: string }[]>}
+ */
+async function selectPathsToStage(gitSvc, config) {
+    const includeUntracked = config.get('includeUntracked', true);
+    const entries = parseStatusZ(await gitSvc.statusZ());
+
+    return entries.filter((entry) => {
+        if (!includeUntracked && entry.status === 'Untracked') {
+            return false;
+        }
+        if (isExcluded(toWorkspaceRelative(entry.path), compiledExcludes)) {
+            log(`Excluding ${entry.path} from commit (matches an exclude pattern).`);
+            return false;
+        }
+        if (entry.origPath && isExcluded(toWorkspaceRelative(entry.origPath), compiledExcludes)) {
+            return false;
+        }
+        return true;
+    });
+}
+
+/** @param {unknown} err */
+function isMaxBufferError(err) {
+    const e = /** @type {any} */ (err);
+    return !!e && (e.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' || /maxBuffer/i.test(e.message || ''));
+}
+
+/** @param {string} text */
+function sha256(text) {
+    return crypto.createHash('sha256').update(text).digest('hex');
+}
+
+/**
+ * Scan the staged diff for secrets before committing. Returns true when the
+ * pipeline may proceed. Security notifications intentionally bypass the
+ * notificationLevel setting — the secret gate must never fail silently.
+ *
+ * The commit is BLOCKED (fail closed) both when a secret is found and when the
+ * diff cannot be scanned (too large). The user can override per exact content
+ * via "Commit Anyway", which records a fingerprint of the reviewed diff; a new
+ * or different staged change is always scanned again.
+ * @param {GitService} gitSvc
+ * @returns {Promise<boolean>}
+ */
+async function guardAgainstSecrets(gitSvc) {
+    const config = getConfig();
+    if (!config.get('scanForSecrets', true)) {
+        return true;
+    }
+
+    /** @type {string | null} */
+    let diff = null;
+    let fingerprint;
+    try {
+        const lineCount = await gitSvc.stagedDiffLineCount();
+        if (lineCount > SECRET_SCAN_MAX_LINES) {
+            fingerprint = `oversize:${sha256(String(lineCount))}:${await stagedNameFingerprint(gitSvc)}`;
+        } else {
+            diff = await gitSvc.stagedDiff();
+            fingerprint = sha256(diff);
+        }
+    } catch (err) {
+        if (!isMaxBufferError(err)) throw err;
+        fingerprint = `oversize:${await stagedNameFingerprint(gitSvc)}`;
+    }
+
+    // Consume a prior approval, but only for the exact content it covered.
+    if (approvedFingerprint && approvedFingerprint === fingerprint) {
+        approvedFingerprint = null;
+        log('Secret scan skipped: user approved this exact staged content.');
+        return true;
+    }
+
+    if (diff === null) {
+        return blockUnscannable(
+            fingerprint,
+            'The staged change is too large to scan for secrets safely.'
+        );
+    }
+
+    const ignorePatterns = compileIgnorePatterns(
+        /** @type {string[]} */ (config.get('secretScanIgnorePatterns', [])),
+        (msg) => log(`WARN: ${msg}`)
+    );
+    const result = scanDiff(diff, {
+        ignorePatterns,
+        onSuppressed: (f) =>
+            log(`Secret finding suppressed by ignore pattern: ${f.file}:${f.line} [${f.ruleId}]`)
     });
 
-    const parts = [];
-    if (added > 0) parts.push(`${added} added`);
-    if (modified > 0) parts.push(`${modified} modified`);
-    if (deleted > 0) parts.push(`${deleted} deleted`);
-
-    if (parts.length === 0) {
-        return 'Auto-commit: Update files';
+    if (result.suppressedCount > 0) {
+        log(`${result.suppressedCount} secret finding(s) suppressed by ignore patterns.`);
+    }
+    if (result.skipped) {
+        return blockUnscannable(
+            fingerprint,
+            'The staged change is too large to scan for secrets safely.'
+        );
+    }
+    if (result.findings.length === 0) {
+        return true;
     }
 
-    const fileCount = lines.length;
-    return `Auto-commit: ${parts.join(', ')} file${fileCount === 1 ? '' : 's'}`;
+    for (const finding of result.findings) {
+        log(
+            `SECRET BLOCKED: ${finding.description} [${finding.ruleId}] at ${finding.file}:${finding.line} (${finding.preview})`
+        );
+    }
+    if (result.truncated) {
+        log(`WARN: Secret findings truncated at ${result.findings.length}; fix and re-run for a full report.`);
+    }
+
+    const first = result.findings[0];
+    const summary =
+        result.findings.length === 1
+            ? `${first.description} in ${first.file}:${first.line}`
+            : `${result.findings.length} potential secrets (first: ${first.file}:${first.line})`;
+
+    promptOverride(
+        `Auto Git blocked the commit: ${summary}. Remove it, add an ignore pattern, or commit anyway.`,
+        fingerprint
+    );
+    return false;
 }
 
-function getFileStatusFromCode(statusCode) {
-    // Git porcelain status codes
-    if (statusCode.includes('A')) return 'Added';
-    if (statusCode.includes('M')) return 'Modified';
-    if (statusCode.includes('D')) return 'Deleted';
-    if (statusCode.includes('R')) return 'Renamed';
-    if (statusCode.includes('C')) return 'Copied';
-    if (statusCode.includes('?')) return 'Untracked';
-    return 'Changed';
+/**
+ * A short, stable fingerprint of the staged file set, used when the full diff
+ * cannot be hashed (too large to fetch).
+ * @param {GitService} gitSvc
+ * @returns {Promise<string>}
+ */
+async function stagedNameFingerprint(gitSvc) {
+    try {
+        const stat = await gitSvc.stagedDiffStat();
+        return sha256(stat);
+    } catch {
+        return sha256('unknown-staged-set');
+    }
+}
+
+/**
+ * Block a commit that could not be scanned and offer an override.
+ * @param {string} fingerprint
+ * @param {string} reason
+ * @returns {boolean} always false (fail closed)
+ */
+function blockUnscannable(fingerprint, reason) {
+    log(`WARN: ${reason} Commit blocked until confirmed.`);
+    promptOverride(`Auto Git: ${reason} Commit anyway?`, fingerprint);
+    return false;
+}
+
+/**
+ * Show the blocking warning with a "Commit Anyway" override bound to the exact
+ * reviewed content via its fingerprint.
+ * @param {string} message
+ * @param {string} fingerprint
+ */
+function promptOverride(message, fingerprint) {
+    vscode.window
+        .showWarningMessage(message, 'Show Logs', 'Commit Anyway')
+        .then((choice) => {
+            if (choice === 'Show Logs' && outputChannel) {
+                outputChannel.show(true);
+            } else if (choice === 'Commit Anyway') {
+                log('User approved committing this staged content despite the secret gate.');
+                approvedFingerprint = fingerprint;
+                performGitOperations();
+            }
+        });
+}
+
+/**
+ * Map raw git errors to actionable messages. Returns '' for benign cases.
+ * @param {any} error
+ * @returns {string}
+ */
+function friendlyErrorMessage(error) {
+    if (error && error.code === 'ENOENT') {
+        return 'Git was not found on your PATH. Install Git and restart VS Code.';
+    }
+    if (error && error.detachedHead) {
+        return 'HEAD is detached — checkout a branch before auto-committing.';
+    }
+    if (error && error.noRemote) {
+        return 'No remote configured. Add one with "git remote add origin <url>" or disable autoPush.';
+    }
+
+    const text = `${(error && error.message) || ''} ${(error && error.stderr) || ''}`;
+
+    if (text.includes('nothing to commit')) {
+        return '';
+    }
+    if (isMaxBufferError(error)) {
+        return 'A staged file is too large to process. Add it to .gitignore or your exclude patterns.';
+    }
+    if (text.includes('Permission denied') || /authentication|could not read Username/i.test(text)) {
+        return 'Git authentication failed. Check your SSH keys or credentials.';
+    }
+    if (/remote rejected|non-fast-forward|fetch first/i.test(text)) {
+        return 'Push rejected by remote — pull the latest changes first.';
+    }
+    if (/does not appear to be a git repository|no configured push destination|could not read from remote/i.test(text)) {
+        return 'Push failed — check that a reachable remote is configured, or disable autoPush.';
+    }
+    if (/user.name|user.email|Please tell me who you are/i.test(text)) {
+        return 'Git identity not configured. Run "git config --global user.name/user.email".';
+    }
+    return `Git operation failed: ${(error && error.message) || 'unknown error'}`;
+}
+
+/**
+ * Generate a commit message, preferring the Copilot language model API and
+ * falling back to a deterministic summary. Driven by the exact set of staged
+ * entries so the message always matches what is committed.
+ * @param {{ path: string, status: string, code: string }[]} entries
+ * @param {GitService} gitSvc
+ * @returns {Promise<string>}
+ */
+async function generateCommitMessage(entries, gitSvc) {
+    const config = getConfig();
+    const maxLength = /** @type {number} */ (config.get('maxCommitMessageLength', 72));
+
+    if (!config.get('useAI', true)) {
+        return generateFallbackFromEntries(entries);
+    }
+
+    try {
+        if (!vscode.lm || typeof vscode.lm.selectChatModels !== 'function') {
+            log('Language Model API unavailable; using fallback commit message.');
+            return generateFallbackFromEntries(entries);
+        }
+
+        // Prefer any available Copilot model; do not pin a model family so the
+        // extension keeps working as Copilot rotates its lineup.
+        let models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+        if (!models || models.length === 0) {
+            models = await vscode.lm.selectChatModels({});
+        }
+        if (!models || models.length === 0) {
+            log('No language models available; using fallback commit message.');
+            return generateFallbackFromEntries(entries);
+        }
+
+        const model = models[0];
+        log(`Using language model: ${model.vendor}/${model.family}`);
+
+        let diffStat = '';
+        try {
+            diffStat = await gitSvc.stagedDiffStat();
+        } catch {
+            // Diff context is best-effort; the file list alone is enough.
+        }
+
+        const prompt = buildCommitPrompt(entries, diffStat);
+        const cancellation = new vscode.CancellationTokenSource();
+        const timeout = setTimeout(() => cancellation.cancel(), AI_REQUEST_TIMEOUT_MS);
+
+        try {
+            const response = await model.sendRequest(
+                [vscode.LanguageModelChatMessage.User(prompt)],
+                {},
+                cancellation.token
+            );
+
+            let raw = '';
+            for await (const fragment of response.text) {
+                raw += fragment;
+            }
+
+            const message = sanitizeAiMessage(raw, maxLength);
+            if (message) {
+                log('AI commit message generated.');
+                return message;
+            }
+            log('AI returned an empty message; using fallback.');
+        } finally {
+            clearTimeout(timeout);
+            cancellation.dispose();
+        }
+    } catch (error) {
+        log(`WARN: AI commit message failed (${errorText(error)}); using fallback.`);
+    }
+
+    return generateFallbackFromEntries(entries);
 }
 
 function deactivate() {
-    console.log('Auto Git extension deactivating...');
-    
-    if (pendingTimeout) {
-        clearTimeout(pendingTimeout);
-        pendingTimeout = null;
-    }
-    
-    if (fileSystemWatcher) {
-        fileSystemWatcher.dispose();
-        fileSystemWatcher = null;
-    }
-    
+    clearPendingTimeout();
     changeTracker.clear();
-    console.log('Auto Git extension deactivated');
+    // Disposables registered on context.subscriptions (status bar, watcher,
+    // output channel, commands) are disposed by VS Code.
+    statusBarItem = undefined;
+    outputChannel = undefined;
+    git = undefined;
 }
 
 module.exports = {

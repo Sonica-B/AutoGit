@@ -1,298 +1,206 @@
-# Auto Git 
+# Auto Git (AutoGit-AI)
 
 A VS Code extension that automatically stages, commits, and pushes your changes with AI-generated commit messages using GitHub Copilot.
 
 ## ✨ Features
 
-- **🤖 AI-Powered Commit Messages**: Uses GitHub Copilot to generate meaningful, contextual commit messages
-- **🔄 Automatic Git Operations**: Automatically stages, commits, and pushes changes when you save files
-- **🎯 Smart File Filtering**: Excludes build artifacts, logs, and sensitive files automatically
+- **🔐 Built-in Secret Scanning**: Every commit's staged diff is scanned for API keys, tokens, private keys, and hardcoded passwords *before* it happens — on by default, zero configuration ([why this matters](https://github.com/Sonica-B/AutoGit/blob/main/docs/gap-analysis-2026.md))
+- **🤖 AI-Powered Commit Messages**: Uses GitHub Copilot to generate meaningful, contextual commit messages from your file list *and* a diff summary
+- **🔄 Automatic Git Operations**: Automatically stages, commits, and (optionally) pushes changes when files change
+- **🎯 Smart File Filtering**: Gitignore-style exclude patterns that work correctly on Windows, macOS, and Linux
+- **🛡️ Protected Branches**: Skip auto-commits on branches you designate (e.g. `main`)
 - **⏱️ Configurable Delays**: Debounces commits to batch related changes together
 - **🎮 Manual Override**: Toggle auto-commit on/off or trigger immediate commits
-- **📊 Status Bar Integration**: See current status and control extension from the status bar
-- **⚙️ Highly Configurable**: Customize behavior through VS Code settings
+- **📊 Status Bar Integration**: See current status and control the extension from the status bar
+- **📜 Output Channel Logging**: Full timestamped logs in the "Auto Git" output channel
+- **⚙️ Highly Configurable**: Push behavior, AI usage, notification noise, and more
 
 ## 📋 Prerequisites
 
-1. **Git**: Ensure Git is installed and configured on your system
-2. **GitHub Copilot**: Must have the GitHub Copilot extension installed and active in VS Code
-3. **Git Repository**: Your workspace must be a valid Git repository with a remote configured
+1. **Git**: Installed and configured (`user.name` / `user.email`)
+2. **GitHub Copilot** *(optional but recommended)*: Needed for AI commit messages; without it the extension writes descriptive fallback messages
+3. **Git Repository**: Your workspace must be a git repository (a remote is required only if `autoPush` is enabled)
+4. **VS Code 1.90+**
 
 ## 🚀 Installation
 
-### Option 1: Install from VSIX (Recommended)
+### Option 1: Install from VSIX
 1. Download the `.vsix` file
-2. Open VS Code
-3. Go to Extensions view (`Ctrl+Shift+X`)
-4. Click the `...` menu and select "Install from VSIX..."
-5. Select the downloaded `.vsix` file
+2. Open VS Code → Extensions view (`Ctrl+Shift+X`)
+3. Click the `...` menu and select **Install from VSIX...**
 
 ### Option 2: Build from Source
-1. Clone or download this repository
-2. Open terminal in the extension directory
-3. Run `npm install` to install dependencies
-4. Run `vsce package` to create a `.vsix` file
-5. Install the generated `.vsix` file
-
-## ⚡ Quick Setup
-
-1. **Configure Git** (if not already done):
-   ```bash
-   git config --global user.name "Your Name"
-   git config --global user.email "your.email@example.com"
-   ```
-
-2. **Enable GitHub Copilot**: Make sure the GitHub Copilot extension is installed and you're signed in
-
-3. **Open a Git Repository**: The extension only works in VS Code workspaces that are Git repositories
+```bash
+git clone https://github.com/Sonica-B/AutoGit.git
+cd AutoGit
+npm install
+npm test
+npx @vscode/vsce package
+code --install-extension auto-git-copilot-*.vsix
+```
 
 ## 📖 Usage
 
-### Basic Usage
-
-1. **Enable Auto Git**: Click the status bar item "Auto Git: OFF" to enable, or use the command palette (`Ctrl+Shift+P`) and search for "Toggle Auto Git"
-
-2. **Save Files**: Once enabled, simply save any file in your project. The extension will:
-   - Wait for the configured delay (default: 3 seconds)
-   - Stage all changes (respecting exclude patterns)
-   - Generate an AI-powered commit message using Copilot
-   - Commit the changes with the generated message
-   - Push to the remote repository
-
-3. **Manual Commit**: Use the command "Commit Changes Now" to immediately trigger a commit without waiting
+1. **Enable Auto Git**: Click the status bar item "Auto Git: OFF", or run **Auto Git: Toggle Auto Git** from the command palette (`Ctrl+Shift+P`)
+2. **Save files**: After the configured delay the extension stages changes (respecting exclude patterns), generates a commit message, commits, and pushes (if `autoPush` is on)
+3. **Manual commit**: Run **Auto Git: Commit Changes Now** to skip the delay
+4. **Watch it work**: Run **Auto Git: Show Logs** to see every git command and decision
 
 ### 🎯 Commands
 
-| Command | Description | Shortcut |
-|---------|-------------|----------|
-| `Auto Git: Toggle Auto Git` | Enable/disable automatic git operations | Click status bar |
-| `Auto Git: Commit Changes Now` | Immediately commit current changes without delay | Command palette |
+| Command | Description |
+|---------|-------------|
+| `Auto Git: Toggle Auto Git` | Enable/disable automatic git operations |
+| `Auto Git: Enable Auto Git` | Turn auto-commit on |
+| `Auto Git: Disable Auto Git` | Turn auto-commit off |
+| `Auto Git: Commit Changes Now` | Immediately commit current changes without waiting |
+| `Auto Git: Show Logs` | Open the Auto Git output channel |
 
 ### 📊 Status Bar Indicators
 
-The status bar shows the current state:
-- **`Auto Git: OFF`** (orange background) - Auto-commit disabled
-- **`Auto Git: ON`** - Auto-commit enabled and ready
-- **`Auto Git: Pending...`** - Waiting for delay timer after file save
-- **`Auto Git: Working...`** - Currently performing git operations (stage, commit, push)
+- **`Auto Git: OFF`** (orange) — auto-commit disabled; click to enable
+- **`Auto Git: ON`** — enabled and watching for changes
+- **`Auto Git: Pending (n)`** — n changed files queued, waiting out the delay
+- **`Auto Git: Working...`** — staging, committing, pushing
 
 ## ⚙️ Configuration
 
-Access settings via **File → Preferences → Settings**, then search for "Auto Git":
+Search for "Auto Git" in VS Code settings:
 
-### Available Settings
+| Setting | Type | Default | Description |
+|---------|------|---------|-------------|
+| `autoGitCopilot.enabled` | boolean | `false` | Enable automatic git operations |
+| `autoGitCopilot.delayMs` | number | `3000` | Debounce delay (1000–30000 ms) before committing |
+| `autoGitCopilot.autoPush` | boolean | `true` | Push after each commit; disable to commit locally only |
+| `autoGitCopilot.includeUntracked` | boolean | `true` | Include untracked files in commits |
+| `autoGitCopilot.useAI` | boolean | `true` | Use Copilot for commit messages (falls back automatically if unavailable) |
+| `autoGitCopilot.scanForSecrets` | boolean | `true` | Block commits whose staged diff contains credential patterns |
+| `autoGitCopilot.secretScanIgnorePatterns` | array | `[]` | Regexes matched against a finding's text or `file:line` to suppress it |
+| `autoGitCopilot.maxCommitMessageLength` | number | `72` | Maximum commit message length (20–200) |
+| `autoGitCopilot.protectedBranches` | array | `[]` | Branches on which auto-commit is skipped, e.g. `["main"]` |
+| `autoGitCopilot.notificationLevel` | string | `"errors"` | Popup noise: `"all"`, `"errors"`, or `"none"` |
+| `autoGitCopilot.excludePatterns` | array | see below | Glob patterns excluded from auto-commit |
 
-| Setting | Type | Default | Range | Description |
-|---------|------|---------|-------|-------------|
-| `autoGitCopilot.enabled` | boolean | `false` | - | Enable automatic git operations on file save |
-| `autoGitCopilot.delayMs` | number | `3000` | 1000-30000 | Delay in milliseconds before triggering git operations |
-| `autoGitCopilot.includeUntracked` | boolean | `true` | - | Include untracked files in automatic commits |
-| `autoGitCopilot.maxCommitMessageLength` | number | `72` | 20-200 | Maximum length for commit messages |
-| `autoGitCopilot.excludePatterns` | array | See below | - | File patterns to exclude from auto-commit |
+### Exclude Patterns
 
-### Default Exclude Patterns
+Patterns follow gitignore-style semantics:
 
-```json
-[
-  "node_modules/**",
-  ".git/**",
-  "*.log",
-  ".env*",
-  "dist/**",
-  "build/**",
-  "*.tmp",
-  "*.temp",
-  ".DS_Store",
-  "Thumbs.db",
-  "*.vsix",
-  ".vscode-test/**"
-]
-```
+- `*` matches within one path segment (`*.log` → `error.log`, `logs/error.log`)
+- `**` matches across segments (`dist/**` → everything under `dist/`)
+- A pattern with an interior `/` (or a leading `/`) is anchored to the workspace root; a bare name — including a trailing-slash directory like `build/` — matches at any depth
+- Windows backslash paths are handled automatically
 
-### Example Configuration
+Default excludes: `node_modules/**`, `.git/**`, `*.log`, `.env*`, `dist/**`, `build/**`, `out/**`, `*.tmp`, `*.temp`, `.DS_Store`, `Thumbs.db`, `*.vsix`, `.vscode-test/**`, `coverage/**`, `*.lock`, `package-lock.json`
+
+### Example
 
 ```json
 {
   "autoGitCopilot.enabled": true,
   "autoGitCopilot.delayMs": 5000,
-  "autoGitCopilot.includeUntracked": false,
-  "autoGitCopilot.maxCommitMessageLength": 50,
-  "autoGitCopilot.excludePatterns": [
-    "node_modules/**",
-    "*.log",
-    ".env*",
-    "dist/**",
-    "coverage/**",
-    "*.tmp",
-    "*.test.js",
-    "screenshots/**"
-  ]
+  "autoGitCopilot.autoPush": false,
+  "autoGitCopilot.protectedBranches": ["main", "release"],
+  "autoGitCopilot.notificationLevel": "all"
 }
 ```
 
+## 🔐 Secret Scanning
+
+Auto-commit removes the human review step between saving a file and pushing it — which is exactly when secrets leak. In 2025, 28.65 million hardcoded secrets hit public GitHub (+34% YoY), and AI-assisted commits leak at roughly **twice** the baseline rate ([GitGuardian, State of Secrets Sprawl 2026](https://blog.gitguardian.com/the-state-of-secrets-sprawl-2026/)).
+
+AutoGit therefore scans every staged diff **before** committing:
+
+- **What it detects**: AWS/GitHub/GitLab/Google/Slack/Stripe/npm/SendGrid/OpenAI/Anthropic keys and tokens, JWTs, private-key blocks, connection strings with embedded passwords, and entropy-checked generic assignments (`password = "..."`, `api_key = "..."`)
+- **What happens on a hit**: the commit is blocked, findings are logged with *redacted* previews (the secret is never echoed), and a warning notification appears — regardless of your `notificationLevel`
+- **Fails closed**: if the staged change is too large to scan safely, the commit is also blocked (not silently allowed) until you confirm
+- **Escape hatches**:
+  - Click **Commit Anyway** on the notification. The override is bound to the *exact* content you reviewed (by fingerprint) — if the staged change is different next time, it is scanned again, so a stale click can never leak a new secret.
+  - Add a regex to `autoGitCopilot.secretScanIgnorePatterns` (matched against the finding text or its `file:line`; suppressions are logged, and unsafe/ReDoS-prone patterns are rejected)
+  - Append `autogit:allow-secret` in a comment on the flagged line (e.g. for documentation examples)
+- **Detects unquoted secrets too**: `.env`, INI, and YAML assignments (`DB_PASSWORD=…`, `aws_secret_access_key = …`) are caught, not just quoted code literals
+- **Limits**: findings are capped at 50 per run; placeholder values (`${VAR}`, `<your-key>`, `changeme`, `process.env...`) are filtered to avoid false positives
+
+Scanning only inspects lines *added* by the pending commit, so pre-existing history is untouched. Detection is pattern + entropy heuristics — it reduces risk substantially but is not a guarantee; keep secrets in environment variables or a secret manager.
+
+### Exclusions are enforced at commit time
+
+Files matching `excludePatterns` are never staged, even when an included file triggers the run — the extension stages an explicit, filtered path list rather than a blanket `git add .`. So a `.env`, `dist/` bundle, or `*.log` that isn't in `.gitignore` still won't be auto-committed.
+
+### Safe around in-progress git operations
+
+Auto-commit is skipped (with a notification) while a merge, rebase, cherry-pick, or revert is in progress, and when `HEAD` is detached — so conflict markers and orphan commits are never auto-committed or pushed. Operations are scoped to your workspace folder, so a workspace that is a subdirectory of a larger repo never sweeps in unrelated changes.
+
 ## 🤖 AI Commit Messages
 
-The extension uses GitHub Copilot to generate contextual commit messages based on:
+When Copilot is available, the extension sends it the changed-file list plus a truncated `git diff --cached --stat` summary and asks for a conventional-commit-style, single-line message:
 
-- **Files changed** and their types
-- **Type of changes** (added, modified, deleted)
-- **File paths** and naming patterns
-- **Common conventions** and best practices
-
-### Message Format Examples
-
-The AI attempts to follow conventional commit formats:
 - `feat: add user authentication system`
 - `fix: resolve login validation issue`
 - `docs: update API documentation`
-- `refactor: simplify error handling logic`
-- `style: improve code formatting`
-- `test: add unit tests for user service`
-- `chore: update dependencies`
 
-### Fallback Messages
+If Copilot is unavailable (or `useAI` is off), a deterministic fallback is used:
 
-If Copilot is unavailable, the extension generates descriptive fallback messages:
-- `Auto-commit: 3 modified files`
-- `Auto-commit: 1 added, 2 modified files`
-- `Auto-commit: Update files`
+- `chore: update src/app.js` (single file)
+- `chore: add 1, update 2 files` (multiple files)
+
+AI requests time out after 20 seconds, so a slow model never blocks your commit.
 
 ## 💡 Best Practices
 
-1. **🔧 Development Use**: This extension is designed for development workflows, not production deployments
-
-2. **👀 Review Changes**: Always review your changes before enabling auto-commit for important projects
-
-3. **🚫 Configure Exclusions**: Make sure to exclude sensitive files, build artifacts, and temporary files
-
-4. **⏱️ Set Appropriate Delay**: Use a delay that gives you time to make related changes without creating too many commits
-
-5. **📊 Monitor Status**: Keep an eye on the status bar to understand what the extension is doing
-
-6. **🔄 Batch Related Changes**: Save multiple related files within the delay window to create logical commits
-
-7. **🎯 Use Meaningful File Names**: AI commit messages are more accurate with descriptive file names
+1. **Review before enabling** on important repositories — auto-commit is a workflow tool, not a substitute for curated history
+2. **Protect your main branch**: `"autoGitCopilot.protectedBranches": ["main"]`
+3. **Exclude secrets and artifacts**: extend `excludePatterns` for anything sensitive (note: `.gitignore` is always respected by git itself)
+4. **Tune the delay** so related edits batch into one commit
+5. **Use commit-only mode** (`"autoPush": false`) when working offline or when you want to review before pushing
 
 ## 🔧 Troubleshooting
 
-### Common Issues
+**Extension not committing:**
+- Check the status bar shows `Auto Git: ON`
+- Run **Auto Git: Show Logs** — every decision (including excluded files) is logged
+- Verify the workspace is a git repository
 
-**🚫 Extension not working:**
-- Ensure you're in a Git repository (`git status` should work)
-- Check that GitHub Copilot is installed and active
-- Verify Git is properly configured with user name and email
-- Restart VS Code after installation
+**No AI commit messages:**
+- Ensure GitHub Copilot is installed, signed in, and active
+- Look for "Using language model:" in the logs; "using fallback commit message" means Copilot wasn't reachable
+- Requires VS Code 1.90+
 
-**🤖 No AI commit messages generated:**
-- Ensure GitHub Copilot is working (try using it in a file)
-- Check that you have an active Copilot subscription
-- Look for "Auto Git: Copilot model found" in console logs
-- The extension will fall back to simple messages if Copilot is unavailable
+**Push failures:**
+- On the first push of a branch the extension sets the upstream automatically, using `remote.pushDefault`, or the sole remote, preferring one named `origin`
+- Check credentials (`git push` from a terminal should succeed)
+- Set `"autoGitCopilot.autoPush": false` to commit locally only
 
-**🔄 Too many commits:**
-- Increase the delay setting (`autoGitCopilot.delayMs`)
-- Review and improve your exclude patterns
-- Consider temporarily disabling for large file operations
-- Use "includeUntracked": false to avoid committing new temp files
+**Commits on the wrong branch:**
+- Add branches to `autoGitCopilot.protectedBranches`
 
-**🚫 Push failures:**
-- Ensure you have push permissions to the remote repository
-- Check your Git authentication (SSH keys, personal access tokens)
-- Verify the remote repository is accessible
-- Try a manual `git push` to test connectivity
+## 🧪 Development
 
-**📁 Files not being committed:**
-- Check your exclude patterns configuration
-- Verify files are not in `.gitignore`
-- Ensure files are actually saved (check auto-save settings)
-- Look for "excluding file" messages in console
-
-### 🔍 Debugging
-
-**View Extension Logs:**
-1. Help → Toggle Developer Tools
-2. Go to Console tab
-3. Filter by "Auto Git" to see detailed operation logs
-4. Look for activation, file save, and git operation messages
-
-**Test Git Operations Manually:**
 ```bash
-# Test basic git functionality
-git status
-git add .
-git commit -m "test"
-git push
-
-# Check git configuration
-git config --list | grep user
+npm install        # install dev dependencies
+npm run lint       # ESLint
+npm test           # unit tests (node:test, no extra dependencies)
+npm run check      # syntax check all entry points
+npx @vscode/vsce package   # build the VSIX
 ```
 
-**Common Console Messages:**
-- ✅ "Auto Git: Workspace initialized" - Extension loaded successfully
-- ✅ "Auto Git: File save listener registered successfully" - File detection working
-- ✅ "Auto Git: Copilot model found" - AI commit messages available
-- ⚠️ "Auto Git: Using fallback commit message" - Copilot unavailable but working
-- ❌ "Auto Git: Not a git repository" - Not in a valid git workspace
+Press `F5` in VS Code to launch an Extension Development Host. Pure logic lives in `lib/` (fully unit-tested); VS Code wiring lives in `extension.js`.
 
-## 🔒 Security Considerations
+CI (GitHub Actions) lints, tests, and packages the VSIX on every push and pull request.
 
-- ✅ **File Safety**: The extension only processes files you explicitly save
-- ✅ **Pattern Exclusions**: Sensitive files can be excluded via configurable patterns
-- ✅ **Git Configuration**: All Git operations use your existing Git configuration and credentials
-- ✅ **Local Processing**: Commit messages are generated locally using Copilot
-- ✅ **No Data Collection**: Extension doesn't collect or transmit your code or data
-- ✅ **Respect .gitignore**: Works with your existing git ignore rules
+## 🔒 Security
 
-## 🤝 Contributing
-
-This extension is open for contributions! Feel free to:
-- 🐛 Submit bug reports and feature requests via GitHub Issues
-- 🔧 Create pull requests for improvements
-- 📖 Improve documentation
-- ⭐ Star the repository if you find it useful
-- 💡 Suggest new features or improvements
+- Git commands are executed with argument arrays (`execFile`) — commit messages are never interpolated into a shell string
+- Only your existing git configuration and credentials are used
+- No data is collected or transmitted by the extension itself; commit message generation goes through the VS Code Language Model API (Copilot)
 
 ## 📄 License
 
-Apache-2.0 license - see [LICENSE](LICENSE) file for details.
+Apache-2.0 — see [LICENSE](LICENSE).
 
-## 🙏 Acknowledgments
+## 📝 Changelog
 
-- GitHub Copilot for providing AI-powered commit message generation
-- VS Code team for the excellent extension API
-- The open-source community for inspiration and feedback
-
-## 📝 Version History
-
-### 1.0.5 (Latest)
-- ✅ Fixed function declaration order
-- ✅ Resolved shouldExcludeFile is not defined error
-- ✅ Proper function hoisting
-
-
-### 1.0.2 (Latest)
-- ✅ Full AI-powered commit message generation with GitHub Copilot
-- ✅ Advanced configuration options with validation
-- ✅ Improved error handling and user feedback
-- ✅ Enhanced status bar integration with visual indicators
-- ✅ Smart file exclusion patterns with regex support
-- ✅ Comprehensive logging and debugging support
-- ✅ Better escape handling for commit messages
-- ✅ Fallback commit message system
-
-### 1.0.1
-- ✅ Basic auto-commit functionality
-- ✅ Manual commit commands
-- ✅ Status bar integration
-- ✅ File save detection
-
-### 1.0.0
-- 🎉 Initial release
-- ✅ Core git automation
-- ✅ Simple commit messages
+See [CHANGELOG.md](https://github.com/Sonica-B/AutoGit/blob/main/CHANGELOG.md) for the full version history.
 
 ---
 
 **Made with ❤️ for developers who love automation and clean commit histories!**
-
-*Auto Git - Because great commits shouldn't require great effort.*

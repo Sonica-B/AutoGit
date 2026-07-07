@@ -2,19 +2,31 @@
   "name": "auto-git-copilot",
   "displayName": "AutoGit-AI",
   "description": "Automatically stage, commit, and push changes with AI-generated commit messages using GitHub Copilot",
-  "version": "1.0.6",
+  "version": "1.3.0",
   "publisher": "ShreyaBoyane",
-  "license": "Apache-2.0 license",
+  "license": "Apache-2.0",
   "icon": "icon.png",
   "author": {
     "name": "Shreya Boyane",
     "email": "shreya.boyane@gmail.com"
   },
   "engines": {
-    "vscode": "^1.60.0"
+    "vscode": "^1.90.0"
   },
-  "categories": ["Other", "SCM Providers"],
-  "keywords": ["git", "auto-commit", "copilot", "ai", "automation", "github", "commit-messages", "productivity"],
+  "categories": [
+    "Other",
+    "SCM Providers"
+  ],
+  "keywords": [
+    "git",
+    "auto-commit",
+    "copilot",
+    "ai",
+    "automation",
+    "github",
+    "commit-messages",
+    "productivity"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/Sonica-B/AutoGit.git"
@@ -40,16 +52,28 @@
         "icon": "$(git-branch)"
       },
       {
+        "command": "autoGitCopilot.enable",
+        "title": "Enable Auto Git",
+        "category": "Auto Git",
+        "icon": "$(check)"
+      },
+      {
+        "command": "autoGitCopilot.disable",
+        "title": "Disable Auto Git",
+        "category": "Auto Git",
+        "icon": "$(circle-slash)"
+      },
+      {
         "command": "autoGitCopilot.commitNow",
         "title": "Commit Changes Now",
         "category": "Auto Git",
         "icon": "$(git-commit)"
       },
       {
-        "command": "autoGitCopilot.test",
-        "title": "Test Extension",
+        "command": "autoGitCopilot.showLogs",
+        "title": "Show Logs",
         "category": "Auto Git",
-        "icon": "$(debug)"
+        "icon": "$(output)"
       }
     ],
     "menus": {
@@ -59,12 +83,19 @@
           "when": "workspaceFolderCount > 0"
         },
         {
+          "command": "autoGitCopilot.enable",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
+          "command": "autoGitCopilot.disable",
+          "when": "workspaceFolderCount > 0"
+        },
+        {
           "command": "autoGitCopilot.commitNow",
           "when": "workspaceFolderCount > 0"
         },
         {
-          "command": "autoGitCopilot.test",
-          "when": "workspaceFolderCount > 0"
+          "command": "autoGitCopilot.showLogs"
         }
       ]
     },
@@ -74,7 +105,7 @@
         "autoGitCopilot.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable automatic git operations on file save",
+          "description": "Enable automatic git operations when files change",
           "order": 1
         },
         "autoGitCopilot.delayMs": {
@@ -82,14 +113,41 @@
           "default": 3000,
           "minimum": 1000,
           "maximum": 30000,
-          "description": "Delay in milliseconds before triggering git operations after file save (1000-30000ms)",
+          "description": "Delay in milliseconds before triggering git operations after a file change (1000-30000ms)",
           "order": 2
+        },
+        "autoGitCopilot.autoPush": {
+          "type": "boolean",
+          "default": true,
+          "description": "Push to the remote after each automatic commit. Disable to commit locally only.",
+          "order": 3
         },
         "autoGitCopilot.includeUntracked": {
           "type": "boolean",
           "default": true,
           "description": "Include untracked files in automatic commits",
-          "order": 3
+          "order": 4
+        },
+        "autoGitCopilot.useAI": {
+          "type": "boolean",
+          "default": true,
+          "description": "Generate commit messages with the Copilot language model. When disabled (or unavailable), a descriptive fallback message is used.",
+          "order": 5
+        },
+        "autoGitCopilot.scanForSecrets": {
+          "type": "boolean",
+          "default": true,
+          "description": "Scan the staged diff for credentials (API keys, tokens, private keys, hardcoded passwords) and block the commit when one is found. Strongly recommended when autoPush is enabled.",
+          "order": 6
+        },
+        "autoGitCopilot.secretScanIgnorePatterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Regex patterns for secret-scan findings to ignore. Each pattern is tested against the matched text and against its 'file:line' location. You can also append 'autogit:allow-secret' in a comment on the flagged line.",
+          "order": 7
         },
         "autoGitCopilot.maxCommitMessageLength": {
           "type": "number",
@@ -97,7 +155,32 @@
           "minimum": 20,
           "maximum": 200,
           "description": "Maximum length for commit messages (20-200 characters)",
-          "order": 4
+          "order": 8
+        },
+        "autoGitCopilot.protectedBranches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Branch names on which auto-commit is skipped (e.g. [\"main\", \"master\"])",
+          "order": 9
+        },
+        "autoGitCopilot.notificationLevel": {
+          "type": "string",
+          "enum": [
+            "all",
+            "errors",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Show all notifications, including successful commits",
+            "Only show warnings and errors",
+            "Never show popup notifications (status bar and logs only)"
+          ],
+          "default": "errors",
+          "description": "Which popup notifications to show. Security warnings from the secret scanner are always shown. Full details are always written to the Auto Git output channel.",
+          "order": 10
         },
         "autoGitCopilot.excludePatterns": {
           "type": "array",
@@ -111,6 +194,7 @@
             ".env*",
             "dist/**",
             "build/**",
+            "out/**",
             "*.tmp",
             "*.temp",
             ".DS_Store",
@@ -119,28 +203,26 @@
             ".vscode-test/**",
             "coverage/**",
             "*.lock",
-            ".git/",
-            ".gitignore",
-            ".gitattributes"
+            "package-lock.json"
           ],
-          "description": "File patterns to exclude from auto-commit (glob patterns supported)",
-          "order": 5
+          "description": "File patterns to exclude from auto-commit (glob patterns: * matches within a segment, ** across segments; patterns without / match at any depth)",
+          "order": 11
         }
       }
     }
   },
-  "dependencies": {},
   "devDependencies": {
-    "@types/vscode": "^1.60.0",
-    "@types/node": "^16.x"
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "eslint": "^9.0.0",
+    "typescript": "^6.0.3"
   },
   "scripts": {
-    "vscode:prepublish": "npm run compile",
-    "compile": "echo 'No compilation needed for JavaScript'",
-    "watch": "echo 'No watch needed for JavaScript'",
-    "pretest": "npm run compile && npm run lint",
-    "lint": "echo 'No linting configured'",
-    "test": "echo 'No tests configured'",
-    "package": "vsce package"
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "check": "node --check extension.js && node --check lib/patterns.js && node --check lib/commitMessage.js && node --check lib/gitService.js && node --check lib/secretScanner.js",
+    "test": "node --test",
+    "pretest": "npm run check",
+    "package": "npx @vscode/vsce package"
   }
 }
