@@ -11,11 +11,27 @@ const {
 } = require('./lib/commitMessage');
 const { GitService } = require('./lib/gitService');
 const { scanDiff, compileIgnorePatterns } = require('./lib/secretScanner');
+const {
+    normalizeRatingState,
+    shouldPromptForRating,
+    applyRatingOutcome,
+    shouldShowWhatsNew
+} = require('./lib/engagement');
 
 const CONFIG_SECTION = 'autoGitCopilot';
 const AI_REQUEST_TIMEOUT_MS = 20_000;
 /** Above this many changed lines, skip fetching the full diff to scan. */
 const SECRET_SCAN_MAX_LINES = 50_000;
+
+// globalState keys for engagement features.
+const STATE_RATING = 'autoGit.ratingState';
+const STATE_VERSION = 'autoGit.installedVersion';
+const MARKETPLACE_ITEM = 'ShreyaBoyane.auto-git-copilot';
+const REVIEW_URL = `https://marketplace.visualstudio.com/items?itemName=${MARKETPLACE_ITEM}&ssr=false#review-details`;
+const CHANGELOG_URL = 'https://github.com/Sonica-B/AutoGit/blob/main/CHANGELOG.md';
+
+/** @type {vscode.ExtensionContext | undefined} */
+let extensionContext;
 
 /** @type {vscode.OutputChannel | undefined} */
 let outputChannel;
@@ -68,13 +84,18 @@ function getConfig() {
     return vscode.workspace.getConfiguration(CONFIG_SECTION);
 }
 
+/** @returns {string} the configured notification level ('all' | 'errors' | 'none') */
+function notificationLevel() {
+    return /** @type {string} */ (getConfig().get('notificationLevel', 'errors'));
+}
+
 /**
  * Show a user notification respecting the configured notification level.
  * @param {'info' | 'error' | 'warn'} kind
  * @param {string} message
  */
 function notify(kind, message) {
-    const level = /** @type {string} */ (getConfig().get('notificationLevel', 'errors'));
+    const level = notificationLevel();
     if (level === 'none') return;
     if (level === 'errors' && kind === 'info') return;
 
@@ -96,9 +117,13 @@ function refreshCompiledExcludes() {
  * @param {vscode.ExtensionContext} context
  */
 async function activate(context) {
+    extensionContext = context;
     outputChannel = vscode.window.createOutputChannel('Auto Git');
     context.subscriptions.push(outputChannel);
     log('Auto Git extension activating...');
+
+    // Surface a one-time "what's new" notice after a genuine upgrade.
+    maybeShowWhatsNew(context);
 
     const workspaceFolders = vscode.workspace.workspaceFolders;
     if (!workspaceFolders || workspaceFolders.length === 0) {
@@ -221,6 +246,14 @@ function registerCommands(context, { workspaceAvailable }) {
         ),
         vscode.commands.registerCommand('autoGitCopilot.showLogs', () => {
             if (outputChannel) outputChannel.show(true);
+        }),
+        vscode.commands.registerCommand('autoGitCopilot.rate', () => {
+            vscode.env.openExternal(vscode.Uri.parse(REVIEW_URL));
+            if (extensionContext) {
+                const state = normalizeRatingState(extensionContext.globalState.get(STATE_RATING));
+                state.rated = true;
+                extensionContext.globalState.update(STATE_RATING, state);
+            }
         })
     );
 }
@@ -436,6 +469,9 @@ async function runGitPipeline(gitSvc) {
         } else {
             notify('info', `Auto Git: Committed — "${commitMessage}"`);
         }
+
+        // A successful commit is our engagement signal for the rating prompt.
+        recordSuccessfulCommit();
 
         updateStatusBar();
     } catch (error) {
@@ -742,6 +778,86 @@ async function generateCommitMessage(entries, gitSvc) {
     return generateFallbackFromEntries(entries);
 }
 
+// --- Engagement: "what's new" notice and rating prompt ----------------------
+
+/**
+ * Show a one-time notice after the extension is upgraded, then record the new
+ * version. Never shown on a fresh install. Respects the "none" notification
+ * level so users who silenced popups stay silent.
+ * @param {vscode.ExtensionContext} context
+ */
+function maybeShowWhatsNew(context) {
+    try {
+        const current = String(context.extension?.packageJSON?.version || '');
+        const previous = context.globalState.get(STATE_VERSION);
+        if (current) {
+            context.globalState.update(STATE_VERSION, current);
+        }
+        if (notificationLevel() === 'none') return;
+        if (!shouldShowWhatsNew(typeof previous === 'string' ? previous : undefined, current)) {
+            return;
+        }
+        vscode.window
+            .showInformationMessage(`AutoGit-AI updated to v${current}.`, "See what's new")
+            .then((choice) => {
+                if (choice) {
+                    vscode.env.openExternal(vscode.Uri.parse(CHANGELOG_URL));
+                }
+            });
+    } catch (err) {
+        log(`WARN: what's-new check failed: ${errorText(err)}`);
+    }
+}
+
+/**
+ * Increment the persisted successful-commit counter and, when the heuristics
+ * allow, invite the user to rate the extension. Best-effort and never throws
+ * into the commit pipeline.
+ */
+function recordSuccessfulCommit() {
+    if (!extensionContext) return;
+    const context = extensionContext;
+    try {
+        const state = normalizeRatingState(context.globalState.get(STATE_RATING));
+        state.commitCount += 1;
+
+        const wantPrompt =
+            getConfig().get('enableRatingPrompt', true) &&
+            notificationLevel() !== 'none' &&
+            shouldPromptForRating(state);
+
+        if (!wantPrompt) {
+            context.globalState.update(STATE_RATING, state);
+            return;
+        }
+
+        // Persist optimistically as a "Later" *before* awaiting the click, so
+        // commits that land while the toast is open can't re-read stale state
+        // and stack duplicate prompts. The click only upgrades the outcome.
+        const prompted = applyRatingOutcome(state, 'later');
+        context.globalState.update(STATE_RATING, prompted);
+
+        vscode.window
+            .showInformationMessage(
+                'Enjoying AutoGit-AI? A quick rating on the Marketplace really helps.',
+                'Rate it ★',
+                'Later',
+                "Don't ask again"
+            )
+            .then((choice) => {
+                if (choice === 'Rate it ★') {
+                    vscode.env.openExternal(vscode.Uri.parse(REVIEW_URL));
+                    context.globalState.update(STATE_RATING, { ...prompted, rated: true });
+                } else if (choice === "Don't ask again") {
+                    context.globalState.update(STATE_RATING, { ...prompted, dismissed: true });
+                }
+                log(`Rating prompt shown; outcome: ${choice || 'dismissed (no click)'}.`);
+            });
+    } catch (err) {
+        log(`WARN: rating prompt failed: ${errorText(err)}`);
+    }
+}
+
 function deactivate() {
     clearPendingTimeout();
     changeTracker.clear();
@@ -750,6 +866,7 @@ function deactivate() {
     statusBarItem = undefined;
     outputChannel = undefined;
     git = undefined;
+    extensionContext = undefined;
 }
 
 module.exports = {

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: ⭐ Rate AutoGit-AI
+    url: https://marketplace.visualstudio.com/items?itemName=ShreyaBoyane.auto-git-copilot&ssr=false#review-details
+    about: Enjoying the extension? A quick Marketplace rating helps others discover it.
+  - name: 💬 Question or discussion
+    url: https://github.com/Sonica-B/AutoGit/discussions
+    about: For usage questions and ideas that aren't bug reports.

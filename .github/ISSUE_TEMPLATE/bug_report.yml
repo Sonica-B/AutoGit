@@ -1,0 +1,54 @@
+name: 🐛 Bug report
+description: Something in AutoGit-AI isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for taking the time to report a bug! Please fill in as much as you can.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+      placeholder: When I saved a file, AutoGit committed but did not push...
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Enable Auto Git
+        2. Save a file
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Auto Git output logs
+      description: "Run “Auto Git: Show Logs” from the Command Palette and paste the relevant lines. Redact any secrets."
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: AutoGit-AI version
+      placeholder: "1.4.0"
+    validations:
+      required: true
+  - type: input
+    id: vscode
+    attributes:
+      label: VS Code / editor and OS
+      placeholder: "VS Code 1.90, Windows 11 (or Cursor, VSCodium, ...)"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight
+      options:
+        - label: I searched existing issues and this isn't a duplicate
+          required: true
+        - label: My workspace is a git repository (`git status` works)
+          required: true

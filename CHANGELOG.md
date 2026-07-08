@@ -2,6 +2,33 @@
 
 All notable changes to the AutoGit-AI extension are documented here.
 
+## [1.4.0] — 2026-07-07
+
+Engagement, discoverability, and contributor experience.
+
+### Added
+
+- **Rate prompt** — after many successful commits (at most 3 times, ever),
+  AutoGit gently invites a Marketplace rating. Fully opt-out via the new
+  `autoGitCopilot.enableRatingPrompt` setting, and silent when
+  `notificationLevel` is `none`. New **Auto Git: Rate AutoGit-AI on the
+  Marketplace** command to rate any time.
+- **"What's new" notice** — a one-time notification after a genuine upgrade
+  (never on fresh install) linking to the changelog.
+- Issue/PR templates, a `CONTRIBUTING.md` with a release checklist, and a
+  "how it works" diagram in the README.
+
+### Marketplace
+
+- Sharper `displayName`, `description`, and search `keywords` (auto commit, auto
+  push, AI commit message, conventional commits, secret scanning, …).
+- Added the `AI` category and an explicit `Free` pricing tag.
+- README leads with a positioning line and social-proof badges (version,
+  installs, rating).
+
+All engagement timing lives in the pure, unit-tested `lib/engagement.js`
+(10 new tests; 117 total).
+
 ## [1.3.0] — 2026-07-07
 
 Hardening release from an exhaustive multi-agent code review: 30 adversarially

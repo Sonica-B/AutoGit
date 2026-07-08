@@ -1,11 +1,12 @@
 {
   "name": "auto-git-copilot",
-  "displayName": "AutoGit-AI",
-  "description": "Automatically stage, commit, and push changes with AI-generated commit messages using GitHub Copilot",
-  "version": "1.3.0",
+  "displayName": "AutoGit-AI — Auto Commit, Push & Secret Scan",
+  "description": "Auto-commit and push with AI-generated commit messages (GitHub Copilot), plus built-in secret scanning that blocks API keys, tokens, and passwords before they leave your machine.",
+  "version": "1.4.0",
   "publisher": "ShreyaBoyane",
   "license": "Apache-2.0",
   "icon": "icon.png",
+  "pricing": "Free",
   "author": {
     "name": "Shreya Boyane",
     "email": "shreya.boyane@gmail.com"
@@ -14,17 +15,22 @@
     "vscode": "^1.90.0"
   },
   "categories": [
-    "Other",
-    "SCM Providers"
+    "SCM Providers",
+    "AI",
+    "Other"
   ],
   "keywords": [
     "git",
-    "auto-commit",
+    "auto commit",
+    "auto push",
+    "ai commit message",
+    "commit message generator",
+    "conventional commits",
     "copilot",
-    "ai",
-    "automation",
+    "secret scanning",
+    "git automation",
+    "gitignore",
     "github",
-    "commit-messages",
     "productivity"
   ],
   "repository": {
@@ -74,6 +80,12 @@
         "title": "Show Logs",
         "category": "Auto Git",
         "icon": "$(output)"
+      },
+      {
+        "command": "autoGitCopilot.rate",
+        "title": "Rate AutoGit-AI on the Marketplace",
+        "category": "Auto Git",
+        "icon": "$(star)"
       }
     ],
     "menus": {
@@ -96,6 +108,9 @@
         },
         {
           "command": "autoGitCopilot.showLogs"
+        },
+        {
+          "command": "autoGitCopilot.rate"
         }
       ]
     },
@@ -175,11 +190,11 @@
           ],
           "enumDescriptions": [
             "Show all notifications, including successful commits",
-            "Only show warnings and errors",
+            "Only show warnings and errors (plus the occasional rating / what's-new notice — see enableRatingPrompt)",
             "Never show popup notifications (status bar and logs only)"
           ],
           "default": "errors",
-          "description": "Which popup notifications to show. Security warnings from the secret scanner are always shown. Full details are always written to the Auto Git output channel.",
+          "description": "Which popup notifications to show. Security warnings from the secret scanner are always shown. The occasional rating prompt and what's-new notice are governed by enableRatingPrompt and are silenced only by \"none\". Full details are always written to the Auto Git output channel.",
           "order": 10
         },
         "autoGitCopilot.excludePatterns": {
@@ -207,6 +222,12 @@
           ],
           "description": "File patterns to exclude from auto-commit (glob patterns: * matches within a segment, ** across segments; patterns without / match at any depth)",
           "order": 11
+        },
+        "autoGitCopilot.enableRatingPrompt": {
+          "type": "boolean",
+          "default": true,
+          "description": "Occasionally invite you to rate AutoGit-AI on the Marketplace after many successful commits (at most 3 times, ever). Turn off to never be asked.",
+          "order": 12
         }
       }
     }
@@ -220,7 +241,7 @@
   "scripts": {
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "check": "node --check extension.js && node --check lib/patterns.js && node --check lib/commitMessage.js && node --check lib/gitService.js && node --check lib/secretScanner.js",
+    "check": "node --check extension.js && node --check lib/patterns.js && node --check lib/commitMessage.js && node --check lib/gitService.js && node --check lib/secretScanner.js && node --check lib/engagement.js",
     "test": "node --test",
     "pretest": "npm run check",
     "package": "npx @vscode/vsce package"

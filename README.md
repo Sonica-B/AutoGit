@@ -1,4 +1,17 @@
-# Auto Git (AutoGit-AI)
+# AutoGit-AI
+
+[![Version](https://img.shields.io/visual-studio-marketplace/v/ShreyaBoyane.auto-git-copilot?label=Marketplace&color=2D2D30)](https://marketplace.visualstudio.com/items?itemName=ShreyaBoyane.auto-git-copilot)
+[![Installs](https://img.shields.io/visual-studio-marketplace/i/ShreyaBoyane.auto-git-copilot?color=2D2D30)](https://marketplace.visualstudio.com/items?itemName=ShreyaBoyane.auto-git-copilot)
+[![Rating](https://img.shields.io/visual-studio-marketplace/r/ShreyaBoyane.auto-git-copilot?color=2D2D30)](https://marketplace.visualstudio.com/items?itemName=ShreyaBoyane.auto-git-copilot&ssr=false#review-details)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
+**Save a file → AutoGit stages it, writes an AI commit message, scans the diff for leaked secrets, and pushes — automatically.** The only auto-commit extension with a built-in secret scanner that blocks API keys, tokens, and passwords *before* they reach your remote.
+
+![How AutoGit-AI works: save → stage → AI message → secret scan → commit + push](images/how-it-works.png)
+
+<!-- TODO: record a real demo GIF and place it at images/demo.gif — see docs/DEMO.md.
+     Then uncomment the line below (a GIF converts far better than a static diagram). -->
+<!-- ![AutoGit-AI in action](images/demo.gif) -->
 
 A VS Code extension that automatically stages, commits, and pushes your changes with AI-generated commit messages using GitHub Copilot.
 
@@ -55,6 +68,7 @@ code --install-extension auto-git-copilot-*.vsix
 | `Auto Git: Disable Auto Git` | Turn auto-commit off |
 | `Auto Git: Commit Changes Now` | Immediately commit current changes without waiting |
 | `Auto Git: Show Logs` | Open the Auto Git output channel |
+| `Auto Git: Rate AutoGit-AI on the Marketplace` | Open the listing to leave a rating |
 
 ### 📊 Status Bar Indicators
 
@@ -80,6 +94,7 @@ Search for "Auto Git" in VS Code settings:
 | `autoGitCopilot.protectedBranches` | array | `[]` | Branches on which auto-commit is skipped, e.g. `["main"]` |
 | `autoGitCopilot.notificationLevel` | string | `"errors"` | Popup noise: `"all"`, `"errors"`, or `"none"` |
 | `autoGitCopilot.excludePatterns` | array | see below | Glob patterns excluded from auto-commit |
+| `autoGitCopilot.enableRatingPrompt` | boolean | `true` | Occasionally invite a Marketplace rating after many commits (≤3 times ever); set `false` to never ask |
 
 ### Exclude Patterns
 
