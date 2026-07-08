@@ -57,24 +57,45 @@ Alternatively run `rebuild.bat` on Windows to do steps 3–4 in one go.
 4. Toggle it on, save a file, and watch: `Pending (1)` → `Working...` → `ON`
 5. Check `git log --oneline -3` for the new commit
 
-## Publishing to the Marketplace
+## Publishing
 
 Publishing is automated by [`.github/workflows/publish.yml`](.github/workflows/publish.yml).
-It runs on any version tag (`v*.*.*`): it lints, type-checks, and tests, verifies
-the tag matches `package.json`, packages the VSIX, publishes to the VS Code
-Marketplace (and Open VSX if configured), and attaches the VSIX to a GitHub
-Release.
+On any version tag (`v*.*.*`) it lints, type-checks, tests, verifies the tag
+matches `package.json`, packages the VSIX, publishes to whichever registries
+you've configured, and attaches the VSIX to a GitHub Release.
 
-### One-time setup
+You can publish to **either or both** registries — set the matching secret and
+that registry is published to; the other is skipped.
+
+### Option A — Open VSX (free, no Azure DevOps) — recommended
+
+Open VSX is the registry used by **Cursor, VSCodium, Windsurf, Gitpod, and
+Theia**. Authentication is just a GitHub login — no Azure DevOps account needed.
+
+One-time setup:
+
+1. Sign in at https://open-vsx.org with your GitHub account.
+2. Sign the Eclipse **Publisher Agreement** (open-vsx.org → your avatar →
+   *Settings → publisher agreement*). Required once, free.
+3. Create an access token at https://open-vsx.org/user-settings/tokens.
+4. Create your namespace (must equal `publisher` in package.json), once:
+   ```bash
+   npx ovsx create-namespace ShreyaBoyane -p <your-open-vsx-token>
+   ```
+5. Add the token as a repository secret named **`OVSX_PAT`**
+   (GitHub repo → Settings → Secrets and variables → Actions → New repository secret).
+
+Manual publish (fallback): `npx ovsx publish auto-git-copilot-*.vsix -p <token>`.
+
+### Option B — official VS Code Marketplace (requires Azure DevOps)
 
 1. Create a publisher (`ShreyaBoyane`) at https://marketplace.visualstudio.com/manage
-2. Create an Azure DevOps **Personal Access Token** with the *Marketplace →
-   Manage* scope
+2. Create an Azure DevOps **Personal Access Token** (free Microsoft account)
+   with the *Marketplace → Manage* scope
 3. Add it as a repository secret named **`VSCE_PAT`**
-   (GitHub repo → Settings → Secrets and variables → Actions → New repository secret)
-4. *(Optional, for Cursor / VSCodium / Windsurf users)* create an
-   [Open VSX](https://open-vsx.org/) token and add it as **`OVSX_PAT`**. If this
-   secret is absent, the Open VSX step is skipped automatically.
+4. First publish must establish the publisher — either publish once manually
+   (`npx @vscode/vsce login ShreyaBoyane` then `npx @vscode/vsce publish`) or
+   let the tagged workflow do it.
 
 ### Cutting a release
 
@@ -88,13 +109,6 @@ git push origin v1.3.1
 The tag **must** match `package.json`'s `version` or the workflow fails before
 publishing anything. To rehearse without publishing, run the workflow manually
 from the Actions tab with **Run workflow → dry_run = true**.
-
-### Manual publish (fallback)
-
-```bash
-npx @vscode/vsce login ShreyaBoyane   # paste your PAT once
-npx @vscode/vsce publish              # publishes the version in package.json
-```
 
 ## Troubleshooting
 

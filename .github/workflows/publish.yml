@@ -1,9 +1,12 @@
 name: Publish
 
 # Publishes the extension when you push a version tag (e.g. `v1.3.0`).
-# Requires repository secrets:
-#   VSCE_PAT  (required) — Azure DevOps PAT with Marketplace > Manage scope
-#   OVSX_PAT  (optional) — Open VSX token; if unset, Open VSX is skipped
+# Configure at least ONE of these repository secrets:
+#   OVSX_PAT  — Open VSX token (FREE, no Azure DevOps; used by Cursor, VSCodium,
+#               Windsurf, Gitpod). Get it at https://open-vsx.org (GitHub login).
+#   VSCE_PAT  — Azure DevOps PAT with Marketplace > Manage scope, for the
+#               official VS Code Marketplace.
+# Each registry is published to only if its token is set; the other is skipped.
 #
 # Release flow:
 #   1. bump "version" in package.json (e.g. 1.3.1) and commit to main
@@ -33,6 +36,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     env:
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
       OVSX_PAT: ${{ secrets.OVSX_PAT }}
     steps:
       - uses: actions/checkout@v4
@@ -72,15 +76,19 @@ jobs:
       - name: Package VSIX
         run: npx @vscode/vsce package --out "auto-git-copilot-${{ steps.meta.outputs.version }}.vsix"
 
-      - name: Publish to VS Code Marketplace
-        if: ${{ github.event.inputs.dry_run != 'true' }}
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}
-        run: npx @vscode/vsce publish --packagePath "auto-git-copilot-${{ steps.meta.outputs.version }}.vsix"
+      - name: Require at least one publish target
+        if: ${{ github.event.inputs.dry_run != 'true' && env.OVSX_PAT == '' && env.VSCE_PAT == '' }}
+        run: |
+          echo "::error::No publish token configured. Set OVSX_PAT (free, Open VSX) and/or VSCE_PAT (VS Code Marketplace) as repository secrets."
+          exit 1
 
-      - name: Publish to Open VSX
+      - name: Publish to Open VSX (free registry)
         if: ${{ github.event.inputs.dry_run != 'true' && env.OVSX_PAT != '' }}
         run: npx ovsx publish "auto-git-copilot-${{ steps.meta.outputs.version }}.vsix" -p "$OVSX_PAT"
+
+      - name: Publish to VS Code Marketplace
+        if: ${{ github.event.inputs.dry_run != 'true' && env.VSCE_PAT != '' }}
+        run: npx @vscode/vsce publish --packagePath "auto-git-copilot-${{ steps.meta.outputs.version }}.vsix"
 
       - name: Upload VSIX as a workflow artifact
         uses: actions/upload-artifact@v4
